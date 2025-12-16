@@ -57,6 +57,7 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "Commands/UnrealMCPInterchangeCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -69,6 +70,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     BlueprintNodeCommands = MakeShared<FUnrealMCPBlueprintNodeCommands>();
     ProjectCommands = MakeShared<FUnrealMCPProjectCommands>();
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
+    InterchangeCommands = MakeShared<FUnrealMCPInterchangeCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -78,6 +80,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     BlueprintNodeCommands.Reset();
     ProjectCommands.Reset();
     UMGCommands.Reset();
+    InterchangeCommands.Reset();
 }
 
 // Initialize subsystem
@@ -277,6 +280,16 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_widget_to_viewport"))
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
+            }
+            // Interchange Commands (UE 5.6+)
+            else if (CommandType == TEXT("import_model") ||
+                     CommandType == TEXT("create_interchange_blueprint") ||
+                     CommandType == TEXT("create_custom_interchange_blueprint") ||
+                     CommandType == TEXT("get_interchange_assets") ||
+                     CommandType == TEXT("reimport_asset") ||
+                     CommandType == TEXT("get_interchange_info"))
+            {
+                ResultJson = InterchangeCommands->HandleCommand(CommandType, Params);
             }
             else
             {

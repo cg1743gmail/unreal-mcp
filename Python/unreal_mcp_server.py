@@ -271,19 +271,35 @@ from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
+from tools.interchange_tools import register_interchange_tools
 
 # Register tools
 register_editor_tools(mcp)
 register_blueprint_tools(mcp)
 register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
-register_umg_tools(mcp)  
+register_umg_tools(mcp)
+register_interchange_tools(mcp)  
 
 @mcp.prompt()
 def info():
     """Information about available Unreal MCP tools and best practices."""
     return """
     # Unreal MCP Server Tools and Best Practices
+    
+    ## Interchange Tools (UE 5.5+ Asset Import System)
+    - `import_model(file_path, destination_path="/Game/Imported", import_mesh=True, import_material=True, import_texture=True, import_skeleton=True, create_physics_asset=False)`
+      Import 3D model files (FBX, glTF, USD, Alembic, OBJ, PLY)
+    - `create_interchange_blueprint(name, mesh_path)`
+      Create a Blueprint from an imported mesh (auto-detects StaticMesh/SkeletalMesh)
+    - `create_custom_interchange_blueprint(name, package_path="/Game/Blueprints/", parent_class="Actor", mesh_path="", components=[])`
+      Create a custom Blueprint with flexible parent class and component configuration
+    - `get_interchange_assets(search_path="/Game/", asset_type="")`
+      Query imported assets (filter by: static_mesh, skeletal_mesh, material, texture)
+    - `reimport_asset(asset_path)`
+      Trigger reimport for existing assets after source file changes
+    - `get_interchange_info(asset_path="")`
+      Get supported formats, engine version, and optional asset metadata
     
     ## UMG (Widget Blueprint) Tools
     - `create_umg_widget_blueprint(widget_name, parent_class="UserWidget", path="/Game/UI")` 
@@ -336,6 +352,15 @@ def info():
     - `create_input_mapping(action_name, key, input_type)` - Create input mappings
     
     ## Best Practices
+    
+    ### Interchange Asset Workflow
+    - Use `get_interchange_info()` to check supported formats before importing
+    - Import models with `import_model()` specifying appropriate destination paths
+    - Query imported assets with `get_interchange_assets()` to verify import success
+    - Create Blueprints from meshes using `create_interchange_blueprint()` for simple cases
+    - Use `create_custom_interchange_blueprint()` for complex setups with custom parent classes
+    - Reimport assets with `reimport_asset()` after modifying source files
+    - Organize imported assets in logical folder structures (/Game/Imported/, /Game/Characters/, etc.)
     
     ### UMG Widget Development
     - Create widgets with descriptive names that reflect their purpose
