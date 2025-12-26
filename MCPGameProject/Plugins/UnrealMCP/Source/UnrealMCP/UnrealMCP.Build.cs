@@ -51,7 +51,13 @@ public class UnrealMCP : ModuleRules
 			"KismetCompiler",
 			"BlueprintGraph",
 			"Projects",
-			"AssetRegistry"
+			"AssetRegistry",
+			// Interchange modules for Pipeline Blueprint creation
+			"InterchangeCore",
+			"InterchangeEngine",
+			"InterchangePipelines",
+			"InterchangeFactoryNodes",
+			"InterchangeNodes"
 		}
 	);
 		

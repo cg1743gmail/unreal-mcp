@@ -261,7 +261,6 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Initialize server
 mcp = FastMCP(
     "UnrealMCP",
-    description="Unreal Engine integration via Model Context Protocol",
     lifespan=server_lifespan
 )
 
@@ -300,6 +299,15 @@ def info():
       Trigger reimport for existing assets after source file changes
     - `get_interchange_info(asset_path="")`
       Get supported formats, engine version, and optional asset metadata
+    
+    ## Interchange Pipeline Blueprint Tools (NEW)
+    - `create_interchange_pipeline_blueprint(name, package_path="/Game/Interchange/Pipelines/", parent_class="GenericAssetsPipeline")`
+      Create an Interchange Pipeline Blueprint for customizing asset import behavior.
+      Parent class options: GenericAssetsPipeline, GenericMeshPipeline, GenericMaterialPipeline, GenericTexturePipeline, PipelineBase
+    - `get_interchange_pipelines(search_path="/Game/")`
+      Get available Pipeline Blueprints and native pipeline classes
+    - `configure_interchange_pipeline(pipeline_path, settings={})`
+      Configure a Pipeline Blueprint's import settings (e.g., {"bImportMeshes": True})
     
     ## UMG (Widget Blueprint) Tools
     - `create_umg_widget_blueprint(widget_name, parent_class="UserWidget", path="/Game/UI")` 
@@ -353,6 +361,12 @@ def info():
     
     ## Best Practices
     
+    ### Interchange Pipeline Blueprint Workflow (Recommended)
+    1. Create a Pipeline Blueprint: `create_interchange_pipeline_blueprint("MyImportPipeline", parent_class="GenericMeshPipeline")`
+    2. Query available pipelines: `get_interchange_pipelines()`
+    3. Configure settings: `configure_interchange_pipeline("/Game/Interchange/Pipelines/MyImportPipeline", {"bImportMeshes": True})`
+    4. Use the pipeline in UE Editor's Import dialog or via project settings
+    
     ### Interchange Asset Workflow
     - Use `get_interchange_info()` to check supported formats before importing
     - Import models with `import_model()` specifying appropriate destination paths
@@ -399,4 +413,4 @@ def info():
 # Run the server
 if __name__ == "__main__":
     logger.info("Starting MCP server with stdio transport")
-    mcp.run(transport='stdio') 
+    mcp.run(transport='stdio')

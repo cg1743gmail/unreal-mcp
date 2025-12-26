@@ -281,13 +281,24 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
             }
-            // Interchange Commands (UE 5.6+)
+            // Interchange Commands (UE 5.5+)
             else if (CommandType == TEXT("import_model") ||
                      CommandType == TEXT("create_interchange_blueprint") ||
                      CommandType == TEXT("create_custom_interchange_blueprint") ||
                      CommandType == TEXT("get_interchange_assets") ||
                      CommandType == TEXT("reimport_asset") ||
-                     CommandType == TEXT("get_interchange_info"))
+                     CommandType == TEXT("get_interchange_info") ||
+                     CommandType == TEXT("create_interchange_pipeline_blueprint") ||
+                     CommandType == TEXT("get_interchange_pipelines") ||
+                     CommandType == TEXT("configure_interchange_pipeline") ||
+                     // Interchange Pipeline Graph Node Operations
+                     CommandType == TEXT("get_interchange_pipeline_graph") ||
+                     CommandType == TEXT("add_interchange_pipeline_function_override") ||
+                     CommandType == TEXT("add_interchange_pipeline_node") ||
+                     CommandType == TEXT("connect_interchange_pipeline_nodes") ||
+                     CommandType == TEXT("find_interchange_pipeline_nodes") ||
+                     CommandType == TEXT("add_interchange_iterate_nodes_block") ||
+                     CommandType == TEXT("compile_interchange_pipeline"))
             {
                 ResultJson = InterchangeCommands->HandleCommand(CommandType, Params);
             }

@@ -13,6 +13,8 @@
 #include "Animation/Skeleton.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/Texture2D.h"
 
 // Blueprint support
@@ -33,6 +35,34 @@
 
 // Editor reimport
 #include "EditorReimportHandler.h"
+
+// Interchange headers
+#include "InterchangeManager.h"
+#include "InterchangePipelineBase.h"
+#include "InterchangeSourceData.h"
+#include "InterchangeFactoryBase.h"
+#include "InterchangeAssetImportData.h"
+#include "InterchangeBlueprintPipelineBase.h"
+#include "InterchangeGenericAssetsPipeline.h"
+#include "InterchangeGenericMaterialPipeline.h"
+#include "InterchangeGenericMeshPipeline.h"
+#include "InterchangeGenericTexturePipeline.h"
+
+// Custom FBX Material Pipeline
+#include "Pipelines/UnrealMCPFBXMaterialPipeline.h"
+
+// Blueprint Graph Node support
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "K2Node_Event.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_CallParentFunction.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
 
 FUnrealMCPInterchangeCommands::FUnrealMCPInterchangeCommands()
 {
@@ -67,6 +97,47 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCommand(const FStri
 	else if (CommandType == TEXT("get_interchange_info"))
 	{
 		return HandleGetInterchangeInfo(Params);
+	}
+	else if (CommandType == TEXT("create_interchange_pipeline_blueprint"))
+	{
+		return HandleCreateInterchangePipelineBlueprint(Params);
+	}
+	else if (CommandType == TEXT("get_interchange_pipelines"))
+	{
+		return HandleGetInterchangePipelines(Params);
+	}
+	else if (CommandType == TEXT("configure_interchange_pipeline"))
+	{
+		return HandleConfigureInterchangePipeline(Params);
+	}
+	// Interchange Pipeline Graph Node Operations
+	else if (CommandType == TEXT("get_interchange_pipeline_graph"))
+	{
+		return HandleGetInterchangePipelineGraph(Params);
+	}
+	else if (CommandType == TEXT("add_interchange_pipeline_function_override"))
+	{
+		return HandleAddInterchangePipelineFunctionOverride(Params);
+	}
+	else if (CommandType == TEXT("add_interchange_pipeline_node"))
+	{
+		return HandleAddInterchangePipelineNode(Params);
+	}
+	else if (CommandType == TEXT("connect_interchange_pipeline_nodes"))
+	{
+		return HandleConnectInterchangePipelineNodes(Params);
+	}
+	else if (CommandType == TEXT("find_interchange_pipeline_nodes"))
+	{
+		return HandleFindInterchangePipelineNodes(Params);
+	}
+	else if (CommandType == TEXT("add_interchange_iterate_nodes_block"))
+	{
+		return HandleAddInterchangeIterateNodesBlock(Params);
+	}
+	else if (CommandType == TEXT("compile_interchange_pipeline"))
+	{
+		return HandleCompileInterchangePipeline(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown interchange command: %s"), *CommandType));
@@ -674,4 +745,1143 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::GetAssetMetadata(const FS
 	}
 
 	return MetadataObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePipelineBlueprint(const TSharedPtr<FJsonObject>& Params)
+{
+	// Get required parameters
+	FString PipelineName;
+	if (!Params->TryGetStringField(TEXT("name"), PipelineName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+	}
+
+	// Get optional parameters
+	FString PackagePath = TEXT("/Game/Interchange/Pipelines/");
+	Params->TryGetStringField(TEXT("package_path"), PackagePath);
+
+	// Ensure package path format
+	if (!PackagePath.StartsWith(TEXT("/Game/")))
+	{
+		PackagePath = TEXT("/Game/") + PackagePath;
+	}
+	if (!PackagePath.EndsWith(TEXT("/")))
+	{
+		PackagePath += TEXT("/");
+	}
+
+	FString FullPath = PackagePath + PipelineName;
+
+	// Check if already exists
+	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline blueprint already exists: %s"), *FullPath));
+	}
+
+	// Get parent pipeline class (default to UInterchangeGenericAssetsPipeline)
+	FString ParentClassName;
+	Params->TryGetStringField(TEXT("parent_class"), ParentClassName);
+	
+	UClass* ParentPipelineClass = UInterchangeGenericAssetsPipeline::StaticClass();
+	if (!ParentClassName.IsEmpty())
+	{
+		if (ParentClassName == TEXT("GenericAssetsPipeline") || ParentClassName == TEXT("UInterchangeGenericAssetsPipeline"))
+		{
+			ParentPipelineClass = UInterchangeGenericAssetsPipeline::StaticClass();
+		}
+		else if (ParentClassName == TEXT("GenericMaterialPipeline") || ParentClassName == TEXT("UInterchangeGenericMaterialPipeline"))
+		{
+			ParentPipelineClass = UInterchangeGenericMaterialPipeline::StaticClass();
+		}
+		else if (ParentClassName == TEXT("GenericMeshPipeline") || ParentClassName == TEXT("UInterchangeGenericMeshPipeline"))
+		{
+			ParentPipelineClass = UInterchangeGenericMeshPipeline::StaticClass();
+		}
+		else if (ParentClassName == TEXT("GenericTexturePipeline") || ParentClassName == TEXT("UInterchangeGenericTexturePipeline"))
+		{
+			ParentPipelineClass = UInterchangeGenericTexturePipeline::StaticClass();
+		}
+		else if (ParentClassName == TEXT("PipelineBase") || ParentClassName == TEXT("UInterchangePipelineBase"))
+		{
+			ParentPipelineClass = UInterchangePipelineBase::StaticClass();
+		}
+		else if (ParentClassName == TEXT("FBXMaterialPipeline") || ParentClassName == TEXT("UUnrealMCPFBXMaterialPipeline"))
+		{
+			// Custom FBX Material Instance Pipeline
+			ParentPipelineClass = UUnrealMCPFBXMaterialPipeline::StaticClass();
+		}
+	}
+
+	// Create package
+	UPackage* Package = CreatePackage(*FullPath);
+	if (!Package)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for pipeline blueprint"));
+	}
+
+	// Determine the correct Blueprint class based on parent
+	// For UInterchangeBlueprintPipelineBase derivatives, use that as BlueprintClass
+	// For other Pipeline classes, use standard UBlueprint
+	UClass* BlueprintClass = UBlueprint::StaticClass();
+	UClass* BlueprintGeneratedClass = UBlueprintGeneratedClass::StaticClass();
+	
+	// Check if parent is derived from UInterchangeBlueprintPipelineBase
+	if (ParentPipelineClass->IsChildOf(UInterchangeBlueprintPipelineBase::StaticClass()))
+	{
+		// Use the scripted pipeline blueprint approach
+		BlueprintClass = UBlueprint::StaticClass();
+	}
+
+	// Create the Pipeline Blueprint using FKismetEditorUtilities
+	UBlueprint* NewPipelineBlueprint = FKismetEditorUtilities::CreateBlueprint(
+		ParentPipelineClass,
+		Package,
+		*PipelineName,
+		BPTYPE_Normal,
+		BlueprintClass,
+		BlueprintGeneratedClass,
+		NAME_None
+	);
+
+	if (!NewPipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Interchange Pipeline Blueprint"));
+	}
+
+	// Mark package dirty and notify asset registry
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(NewPipelineBlueprint);
+
+	// Compile the blueprint
+	FKismetEditorUtilities::CompileBlueprint(NewPipelineBlueprint);
+
+	// Prepare result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("name"), PipelineName);
+	ResultObj->SetStringField(TEXT("path"), FullPath);
+	ResultObj->SetStringField(TEXT("parent_class"), ParentPipelineClass->GetName());
+	ResultObj->SetStringField(TEXT("type"), TEXT("InterchangePipelineBlueprint"));
+	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline Blueprint created. Open in editor to configure import settings."));
+
+	UE_LOG(LogTemp, Log, TEXT("Created Interchange Pipeline Blueprint: %s (Parent: %s)"), *PipelineName, *ParentPipelineClass->GetName());
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipelines(const TSharedPtr<FJsonObject>& Params)
+{
+	// Get optional search path
+	FString SearchPath = TEXT("/Game/");
+	Params->TryGetStringField(TEXT("search_path"), SearchPath);
+
+	// Query asset registry for Pipeline Blueprints
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(*SearchPath);
+	Filter.ClassPaths.Add(UInterchangeBlueprintPipelineBase::StaticClass()->GetClassPathName());
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry.GetAssets(Filter, AssetDataList);
+
+	// Also search for native pipeline classes
+	TArray<TSharedPtr<FJsonValue>> PipelinesArray;
+
+	// Add found blueprint pipelines
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		TSharedPtr<FJsonObject> PipelineObj = MakeShared<FJsonObject>();
+		PipelineObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+		PipelineObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+		PipelineObj->SetStringField(TEXT("type"), TEXT("Blueprint"));
+		PipelineObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+		PipelinesArray.Add(MakeShared<FJsonValueObject>(PipelineObj));
+	}
+
+	// Add available native pipeline classes
+	TArray<TSharedPtr<FJsonValue>> NativePipelinesArray;
+	
+	auto AddNativePipeline = [&NativePipelinesArray](const FString& Name, const FString& Description)
+	{
+		TSharedPtr<FJsonObject> PipelineObj = MakeShared<FJsonObject>();
+		PipelineObj->SetStringField(TEXT("name"), Name);
+		PipelineObj->SetStringField(TEXT("description"), Description);
+		PipelineObj->SetStringField(TEXT("type"), TEXT("Native"));
+		NativePipelinesArray.Add(MakeShared<FJsonValueObject>(PipelineObj));
+	};
+
+	AddNativePipeline(TEXT("GenericAssetsPipeline"), TEXT("Base pipeline for general asset import"));
+	AddNativePipeline(TEXT("GenericMeshPipeline"), TEXT("Pipeline for mesh import (StaticMesh/SkeletalMesh)"));
+	AddNativePipeline(TEXT("GenericMaterialPipeline"), TEXT("Pipeline for material import"));
+	AddNativePipeline(TEXT("GenericTexturePipeline"), TEXT("Pipeline for texture import"));
+	AddNativePipeline(TEXT("FBXMaterialPipeline"), TEXT("Custom pipeline for FBX material instance auto-setup (UnrealMCP)"));
+
+	// Prepare result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetArrayField(TEXT("blueprint_pipelines"), PipelinesArray);
+	ResultObj->SetNumberField(TEXT("blueprint_count"), static_cast<double>(PipelinesArray.Num()));
+	ResultObj->SetArrayField(TEXT("native_pipelines"), NativePipelinesArray);
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConfigureInterchangePipeline(const TSharedPtr<FJsonObject>& Params)
+{
+	// Get required parameters
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	// Load the pipeline blueprint
+	UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(PipelinePath);
+	if (!LoadedAsset)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	UBlueprint* PipelineBlueprint = Cast<UBlueprint>(LoadedAsset);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Asset is not a Blueprint"));
+	}
+
+	// Get the CDO (Class Default Object) to configure
+	UClass* GeneratedClass = PipelineBlueprint->GeneratedClass;
+	if (!GeneratedClass)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no generated class"));
+	}
+
+	UInterchangePipelineBase* PipelineCDO = Cast<UInterchangePipelineBase>(GeneratedClass->GetDefaultObject());
+	if (!PipelineCDO)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint is not an Interchange Pipeline"));
+	}
+
+	// Get configuration settings from params
+	TArray<TSharedPtr<FJsonValue>> ConfiguredProperties;
+
+	// Configure common pipeline properties if provided
+	const TSharedPtr<FJsonObject>* SettingsObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("settings"), SettingsObj))
+	{
+		// Iterate through provided settings and try to set them
+		for (const auto& Setting : (*SettingsObj)->Values)
+		{
+			FString PropertyName = Setting.Key;
+			
+			// Find the property on the pipeline
+			FProperty* Property = GeneratedClass->FindPropertyByName(*PropertyName);
+			if (Property)
+			{
+				TSharedPtr<FJsonObject> PropInfo = MakeShared<FJsonObject>();
+				PropInfo->SetStringField(TEXT("name"), PropertyName);
+				PropInfo->SetBoolField(TEXT("found"), true);
+				
+				// Try to set the property value based on type
+				void* PropertyAddress = Property->ContainerPtrToValuePtr<void>(PipelineCDO);
+				
+				if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+				{
+					bool Value = false;
+					if (Setting.Value->TryGetBool(Value))
+					{
+						BoolProp->SetPropertyValue(PropertyAddress, Value);
+						PropInfo->SetBoolField(TEXT("set"), true);
+					}
+				}
+				else if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
+				{
+					double Value = 0.0;
+					if (Setting.Value->TryGetNumber(Value))
+					{
+						FloatProp->SetPropertyValue(PropertyAddress, static_cast<float>(Value));
+						PropInfo->SetBoolField(TEXT("set"), true);
+					}
+				}
+				else if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
+				{
+					double Value = 0.0;
+					if (Setting.Value->TryGetNumber(Value))
+					{
+						IntProp->SetPropertyValue(PropertyAddress, static_cast<int32>(Value));
+						PropInfo->SetBoolField(TEXT("set"), true);
+					}
+				}
+				else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+				{
+					FString Value;
+					if (Setting.Value->TryGetString(Value))
+					{
+						StrProp->SetPropertyValue(PropertyAddress, Value);
+						PropInfo->SetBoolField(TEXT("set"), true);
+					}
+				}
+				
+				ConfiguredProperties.Add(MakeShared<FJsonValueObject>(PropInfo));
+			}
+		}
+	}
+
+	// Mark the blueprint as modified
+	PipelineBlueprint->MarkPackageDirty();
+
+	// Prepare result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("pipeline_class"), GeneratedClass->GetName());
+	ResultObj->SetArrayField(TEXT("configured_properties"), ConfiguredProperties);
+	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline configured. Save the asset to persist changes."));
+
+	UE_LOG(LogTemp, Log, TEXT("Configured Interchange Pipeline: %s"), *PipelinePath);
+
+	return ResultObj;
+}
+
+// ============================================================================
+// Helper Functions for Pipeline Graph Operations
+// ============================================================================
+
+UBlueprint* FUnrealMCPInterchangeCommands::LoadPipelineBlueprint(const FString& PipelinePath) const
+{
+	UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(PipelinePath);
+	if (!LoadedAsset)
+	{
+		return nullptr;
+	}
+	return Cast<UBlueprint>(LoadedAsset);
+}
+
+UEdGraph* FUnrealMCPInterchangeCommands::FindOrCreateFunctionGraph(UBlueprint* Blueprint, const FString& FunctionName) const
+{
+	if (!Blueprint)
+	{
+		return nullptr;
+	}
+
+	// First, try to find an existing function graph
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName().ToString() == FunctionName)
+		{
+			return Graph;
+		}
+	}
+
+	// Check UbergraphPages (event graphs)
+	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	{
+		if (Graph && Graph->GetFName().ToString() == FunctionName)
+		{
+			return Graph;
+		}
+	}
+
+	return nullptr;
+}
+
+// ============================================================================
+// Interchange Pipeline Graph Node Operations
+// ============================================================================
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipelineGraph(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("blueprint_name"), PipelineBlueprint->GetName());
+
+	// Get parent class info
+	if (PipelineBlueprint->ParentClass)
+	{
+		ResultObj->SetStringField(TEXT("parent_class"), PipelineBlueprint->ParentClass->GetName());
+	}
+
+	// List function graphs
+	TArray<TSharedPtr<FJsonValue>> FunctionGraphsArray;
+	for (UEdGraph* Graph : PipelineBlueprint->FunctionGraphs)
+	{
+		if (Graph)
+		{
+			TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+			GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+			GraphObj->SetNumberField(TEXT("node_count"), static_cast<double>(Graph->Nodes.Num()));
+			FunctionGraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+		}
+	}
+	ResultObj->SetArrayField(TEXT("function_graphs"), FunctionGraphsArray);
+
+	// List event graphs (UbergraphPages)
+	TArray<TSharedPtr<FJsonValue>> EventGraphsArray;
+	for (UEdGraph* Graph : PipelineBlueprint->UbergraphPages)
+	{
+		if (Graph)
+		{
+			TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+			GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+			GraphObj->SetNumberField(TEXT("node_count"), static_cast<double>(Graph->Nodes.Num()));
+			
+			// List nodes in this graph
+			TArray<TSharedPtr<FJsonValue>> NodesArray;
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node)
+				{
+					TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+					NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+					NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+					NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+					NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+				}
+			}
+			GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+			
+			EventGraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+		}
+	}
+	ResultObj->SetArrayField(TEXT("event_graphs"), EventGraphsArray);
+
+	// List overridable functions from parent class
+	TArray<TSharedPtr<FJsonValue>> OverridableFunctionsArray;
+	if (PipelineBlueprint->ParentClass)
+	{
+		for (TFieldIterator<UFunction> FuncIt(PipelineBlueprint->ParentClass, EFieldIteratorFlags::IncludeSuper); FuncIt; ++FuncIt)
+		{
+			UFunction* Function = *FuncIt;
+			if (Function && Function->HasAnyFunctionFlags(FUNC_BlueprintEvent))
+			{
+				TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+				FuncObj->SetStringField(TEXT("name"), Function->GetName());
+				FuncObj->SetBoolField(TEXT("is_native"), Function->HasAnyFunctionFlags(FUNC_Native));
+				OverridableFunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+			}
+		}
+	}
+	ResultObj->SetArrayField(TEXT("overridable_functions"), OverridableFunctionsArray);
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangePipelineFunctionOverride(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	FString FunctionName;
+	if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	// Get node position
+	FVector2D NodePosition(0.0f, 0.0f);
+	if (Params->HasField(TEXT("node_position")))
+	{
+		NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+	}
+
+	// Find the function in parent class
+	UFunction* FunctionToOverride = nullptr;
+	if (PipelineBlueprint->ParentClass)
+	{
+		FunctionToOverride = PipelineBlueprint->ParentClass->FindFunctionByName(*FunctionName);
+	}
+
+	if (!FunctionToOverride)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function not found in parent class: %s"), *FunctionName));
+	}
+
+	// Check if already overridden
+	UEdGraph* ExistingGraph = FindOrCreateFunctionGraph(PipelineBlueprint, FunctionName);
+	if (ExistingGraph)
+	{
+		// Function already overridden, return existing graph info
+		TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+		ResultObj->SetBoolField(TEXT("success"), true);
+		ResultObj->SetStringField(TEXT("function_name"), FunctionName);
+		ResultObj->SetStringField(TEXT("graph_name"), ExistingGraph->GetName());
+		ResultObj->SetBoolField(TEXT("already_exists"), true);
+		ResultObj->SetStringField(TEXT("message"), TEXT("Function override already exists"));
+		
+		// Find entry node
+		for (UEdGraphNode* Node : ExistingGraph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(Node))
+			{
+				ResultObj->SetStringField(TEXT("entry_node_id"), EntryNode->NodeGuid.ToString());
+				break;
+			}
+		}
+		
+		return ResultObj;
+	}
+
+	// Create the function override graph using the proper UE API
+	// IMPORTANT: Pass UClass* (ParentClass) instead of UFunction* to get proper override behavior
+	// This triggers CreateFunctionGraphTerminators(Graph, UClass*) which:
+	// 1. Creates Entry node with correct function reference
+	// 2. Creates ParentCall node automatically
+	// 3. Connects Entry -> ParentCall
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		PipelineBlueprint,
+		*FunctionName,
+		UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass()
+	);
+
+	if (!NewGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create function graph"));
+	}
+
+	// Add the graph to the blueprint - pass ParentClass (UClass*) NOT the function (UFunction*)
+	// This is critical for proper function override creation with Entry + ParentCall nodes
+	FBlueprintEditorUtils::AddFunctionGraph(PipelineBlueprint, NewGraph, false, PipelineBlueprint->ParentClass.Get());
+
+	// Find the entry node that was created by AddFunctionGraph
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : NewGraph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	// Entry node should have been created automatically by AddFunctionGraph
+	// If not found, something went wrong
+	if (!EntryNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create function entry node. AddFunctionGraph may have failed."));
+	}
+
+	// Set node position
+	EntryNode->NodePosX = static_cast<int32>(NodePosition.X);
+	EntryNode->NodePosY = static_cast<int32>(NodePosition.Y);
+
+	FString EntryNodeId = EntryNode->NodeGuid.ToString();
+
+	// Mark blueprint as modified
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
+
+	// Collect entry node pins for response
+	TArray<TSharedPtr<FJsonValue>> EntryPinsArray;
+	for (UEdGraphPin* Pin : EntryNode->Pins)
+	{
+		if (Pin)
+		{
+			TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+			PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+			PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+			PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+			EntryPinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("function_name"), FunctionName);
+	ResultObj->SetStringField(TEXT("graph_name"), NewGraph->GetName());
+	ResultObj->SetStringField(TEXT("entry_node_id"), EntryNodeId);
+	ResultObj->SetArrayField(TEXT("entry_pins"), EntryPinsArray);
+	ResultObj->SetBoolField(TEXT("already_exists"), false);
+	ResultObj->SetStringField(TEXT("message"), TEXT("Function override created successfully"));
+
+	UE_LOG(LogTemp, Log, TEXT("Created function override: %s in %s (Entry: %s)"), *FunctionName, *PipelinePath, *EntryNodeId);
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangePipelineNode(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	FString NodeType;
+	if (!Params->TryGetStringField(TEXT("node_type"), NodeType))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_type' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	// Get optional parameters
+	FString FunctionName;
+	Params->TryGetStringField(TEXT("function_name"), FunctionName);
+
+	FString TargetClass;
+	Params->TryGetStringField(TEXT("target_class"), TargetClass);
+
+	FVector2D NodePosition(0.0f, 0.0f);
+	if (Params->HasField(TEXT("node_position")))
+	{
+		NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+	}
+
+	// Get the event graph (or first available graph)
+	UEdGraph* TargetGraph = nullptr;
+	if (PipelineBlueprint->UbergraphPages.Num() > 0)
+	{
+		TargetGraph = PipelineBlueprint->UbergraphPages[0];
+	}
+	else if (PipelineBlueprint->FunctionGraphs.Num() > 0)
+	{
+		TargetGraph = PipelineBlueprint->FunctionGraphs[0];
+	}
+
+	if (!TargetGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph found in pipeline blueprint"));
+	}
+
+	UEdGraphNode* NewNode = nullptr;
+
+	if (NodeType == TEXT("FunctionCall"))
+	{
+		// Create a function call node
+		UK2Node_CallFunction* CallFunctionNode = NewObject<UK2Node_CallFunction>(TargetGraph);
+		
+		// Find the function
+		UFunction* TargetFunction = nullptr;
+		if (!TargetClass.IsEmpty())
+		{
+			UClass* Class = FindObject<UClass>(nullptr, *TargetClass);
+			if (!Class)
+			{
+				// Try with full path
+				Class = LoadClass<UObject>(nullptr, *TargetClass);
+			}
+			if (Class)
+			{
+				TargetFunction = Class->FindFunctionByName(*FunctionName);
+			}
+		}
+
+		if (TargetFunction)
+		{
+			CallFunctionNode->SetFromFunction(TargetFunction);
+		}
+		else
+		{
+			// Try to find function by name in common classes
+			CallFunctionNode->FunctionReference.SetExternalMember(*FunctionName, nullptr);
+		}
+
+		CallFunctionNode->NodePosX = NodePosition.X;
+		CallFunctionNode->NodePosY = NodePosition.Y;
+
+		TargetGraph->AddNode(CallFunctionNode);
+		CallFunctionNode->CreateNewGuid();
+		CallFunctionNode->PostPlacedNewNode();
+		CallFunctionNode->AllocateDefaultPins();
+
+		NewNode = CallFunctionNode;
+	}
+	else if (NodeType == TEXT("ParentCall"))
+	{
+		// Create a call parent function node
+		UK2Node_CallParentFunction* ParentCallNode = NewObject<UK2Node_CallParentFunction>(TargetGraph);
+		
+		if (!FunctionName.IsEmpty() && PipelineBlueprint->ParentClass)
+		{
+			UFunction* ParentFunction = PipelineBlueprint->ParentClass->FindFunctionByName(*FunctionName);
+			if (ParentFunction)
+			{
+				ParentCallNode->SetFromFunction(ParentFunction);
+			}
+		}
+
+		ParentCallNode->NodePosX = NodePosition.X;
+		ParentCallNode->NodePosY = NodePosition.Y;
+
+		TargetGraph->AddNode(ParentCallNode);
+		ParentCallNode->CreateNewGuid();
+		ParentCallNode->PostPlacedNewNode();
+		ParentCallNode->AllocateDefaultPins();
+
+		NewNode = ParentCallNode;
+	}
+	else if (NodeType == TEXT("Variable"))
+	{
+		// Create a variable get node
+		UK2Node_VariableGet* VarGetNode = NewObject<UK2Node_VariableGet>(TargetGraph);
+		
+		if (!FunctionName.IsEmpty())
+		{
+			VarGetNode->VariableReference.SetSelfMember(FName(*FunctionName));
+		}
+
+		VarGetNode->NodePosX = NodePosition.X;
+		VarGetNode->NodePosY = NodePosition.Y;
+
+		TargetGraph->AddNode(VarGetNode);
+		VarGetNode->CreateNewGuid();
+		VarGetNode->PostPlacedNewNode();
+		VarGetNode->AllocateDefaultPins();
+		VarGetNode->ReconstructNode();
+
+		NewNode = VarGetNode;
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown node type: %s"), *NodeType));
+	}
+
+	if (!NewNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create node"));
+	}
+
+	// Mark blueprint as modified
+	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("node_id"), NewNode->NodeGuid.ToString());
+	ResultObj->SetStringField(TEXT("node_type"), NodeType);
+	ResultObj->SetStringField(TEXT("node_class"), NewNode->GetClass()->GetName());
+
+	// List output pins
+	TArray<TSharedPtr<FJsonValue>> PinsArray;
+	for (UEdGraphPin* Pin : NewNode->Pins)
+	{
+		if (Pin)
+		{
+			TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+			PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+			PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+			PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+			PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+	}
+	ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+
+	UE_LOG(LogTemp, Log, TEXT("Added node of type %s to pipeline %s"), *NodeType, *PipelinePath);
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConnectInterchangePipelineNodes(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	FString SourceNodeId;
+	if (!Params->TryGetStringField(TEXT("source_node_id"), SourceNodeId))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_node_id' parameter"));
+	}
+
+	FString TargetNodeId;
+	if (!Params->TryGetStringField(TEXT("target_node_id"), TargetNodeId))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_node_id' parameter"));
+	}
+
+	FString SourcePinName;
+	if (!Params->TryGetStringField(TEXT("source_pin"), SourcePinName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'source_pin' parameter"));
+	}
+
+	FString TargetPinName;
+	if (!Params->TryGetStringField(TEXT("target_pin"), TargetPinName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_pin' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	// Find nodes in all graphs
+	UEdGraphNode* SourceNode = nullptr;
+	UEdGraphNode* TargetNode = nullptr;
+	UEdGraph* FoundGraph = nullptr;
+
+	auto FindNodesInGraph = [&](UEdGraph* Graph)
+	{
+		if (!Graph) return;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (Node->NodeGuid.ToString() == SourceNodeId)
+			{
+				SourceNode = Node;
+				FoundGraph = Graph;
+			}
+			if (Node->NodeGuid.ToString() == TargetNodeId)
+			{
+				TargetNode = Node;
+			}
+		}
+	};
+
+	// Search in all graphs
+	for (UEdGraph* Graph : PipelineBlueprint->UbergraphPages)
+	{
+		FindNodesInGraph(Graph);
+	}
+	for (UEdGraph* Graph : PipelineBlueprint->FunctionGraphs)
+	{
+		FindNodesInGraph(Graph);
+	}
+
+	if (!SourceNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Source node not found: %s"), *SourceNodeId));
+	}
+	if (!TargetNode)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Target node not found: %s"), *TargetNodeId));
+	}
+
+	// Find pins
+	UEdGraphPin* SourcePin = nullptr;
+	UEdGraphPin* TargetPin = nullptr;
+
+	for (UEdGraphPin* Pin : SourceNode->Pins)
+	{
+		if (Pin->PinName.ToString() == SourcePinName && Pin->Direction == EGPD_Output)
+		{
+			SourcePin = Pin;
+			break;
+		}
+	}
+
+	for (UEdGraphPin* Pin : TargetNode->Pins)
+	{
+		if (Pin->PinName.ToString() == TargetPinName && Pin->Direction == EGPD_Input)
+		{
+			TargetPin = Pin;
+			break;
+		}
+	}
+
+	if (!SourcePin)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Source pin not found: %s"), *SourcePinName));
+	}
+	if (!TargetPin)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Target pin not found: %s"), *TargetPinName));
+	}
+
+	// Make the connection
+	if (!FoundGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not determine graph for connection"));
+	}
+
+	const UEdGraphSchema* Schema = FoundGraph->GetSchema();
+	if (!Schema)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not get graph schema"));
+	}
+
+	// Check if connection is valid first
+	FPinConnectionResponse Response = Schema->CanCreateConnection(SourcePin, TargetPin);
+	if (Response.Response == CONNECT_RESPONSE_DISALLOW)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Cannot connect pins: %s"), *Response.Message.ToString()));
+	}
+
+	// Try to make the connection
+	bool bConnected = Schema->TryCreateConnection(SourcePin, TargetPin);
+	if (bConnected)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+
+		TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+		ResultObj->SetBoolField(TEXT("success"), true);
+		ResultObj->SetStringField(TEXT("source_node_id"), SourceNodeId);
+		ResultObj->SetStringField(TEXT("target_node_id"), TargetNodeId);
+		ResultObj->SetStringField(TEXT("source_pin"), SourcePinName);
+		ResultObj->SetStringField(TEXT("target_pin"), TargetPinName);
+		ResultObj->SetStringField(TEXT("message"), TEXT("Nodes connected successfully"));
+
+		UE_LOG(LogTemp, Log, TEXT("Connected nodes in pipeline %s"), *PipelinePath);
+
+		return ResultObj;
+	}
+
+	return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to connect nodes"));
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleFindInterchangePipelineNodes(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	FString NodeTypeFilter;
+	Params->TryGetStringField(TEXT("node_type"), NodeTypeFilter);
+
+	FString FunctionNameFilter;
+	Params->TryGetStringField(TEXT("function_name"), FunctionNameFilter);
+
+	TArray<TSharedPtr<FJsonValue>> NodesArray;
+
+	auto ProcessGraph = [&](UEdGraph* Graph, const FString& GraphType)
+	{
+		if (!Graph) return;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+
+			FString NodeClassName = Node->GetClass()->GetName();
+			FString NodeTitle = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+			
+			// Sanitize node title to avoid JSON issues (remove newlines, escape quotes)
+			NodeTitle.ReplaceInline(TEXT("\r\n"), TEXT(" "));
+			NodeTitle.ReplaceInline(TEXT("\n"), TEXT(" "));
+			NodeTitle.ReplaceInline(TEXT("\r"), TEXT(" "));
+			NodeTitle.ReplaceInline(TEXT("\""), TEXT("'"));
+
+			// Apply filters
+			if (!NodeTypeFilter.IsEmpty())
+			{
+				if (!NodeClassName.Contains(NodeTypeFilter))
+				{
+					continue;
+				}
+			}
+
+			if (!FunctionNameFilter.IsEmpty())
+			{
+				if (!NodeTitle.Contains(FunctionNameFilter))
+				{
+					continue;
+				}
+			}
+
+			TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+			NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+			NodeObj->SetStringField(TEXT("node_class"), NodeClassName);
+			NodeObj->SetStringField(TEXT("node_title"), NodeTitle);
+			NodeObj->SetStringField(TEXT("graph_name"), Graph->GetName());
+			NodeObj->SetStringField(TEXT("graph_type"), GraphType);
+			NodeObj->SetNumberField(TEXT("pos_x"), static_cast<double>(Node->NodePosX));
+			NodeObj->SetNumberField(TEXT("pos_y"), static_cast<double>(Node->NodePosY));
+
+			// List pins
+			TArray<TSharedPtr<FJsonValue>> PinsArray;
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin)
+				{
+					TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+					PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+					PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+					PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+					PinObj->SetBoolField(TEXT("connected"), Pin->LinkedTo.Num() > 0);
+					PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+				}
+			}
+			NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+			NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+		}
+	};
+
+	// Process all graphs
+	for (UEdGraph* Graph : PipelineBlueprint->UbergraphPages)
+	{
+		ProcessGraph(Graph, TEXT("EventGraph"));
+	}
+	for (UEdGraph* Graph : PipelineBlueprint->FunctionGraphs)
+	{
+		ProcessGraph(Graph, TEXT("FunctionGraph"));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
+	ResultObj->SetNumberField(TEXT("count"), static_cast<double>(NodesArray.Num()));
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangeIterateNodesBlock(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	FString NodeClass;
+	if (!Params->TryGetStringField(TEXT("node_class"), NodeClass))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_class' parameter"));
+	}
+
+	FString GraphName = TEXT("ExecutePipeline");
+	Params->TryGetStringField(TEXT("graph_name"), GraphName);
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	FVector2D NodePosition(0.0f, 0.0f);
+	if (Params->HasField(TEXT("node_position")))
+	{
+		NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+	}
+
+	// Find the target graph
+	UEdGraph* TargetGraph = FindOrCreateFunctionGraph(PipelineBlueprint, GraphName);
+	if (!TargetGraph)
+	{
+		// Try event graphs
+		for (UEdGraph* Graph : PipelineBlueprint->UbergraphPages)
+		{
+			if (Graph && Graph->GetName().Contains(GraphName))
+			{
+				TargetGraph = Graph;
+				break;
+			}
+		}
+	}
+
+	if (!TargetGraph)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s. Create function override first."), *GraphName));
+	}
+
+	// Create the IterateNodesOfType function call
+	// Note: This is a templated function, so we need to set it up properly
+	UK2Node_CallFunction* IterateNode = NewObject<UK2Node_CallFunction>(TargetGraph);
+	
+	// Find UInterchangeBaseNodeContainer::IterateNodesOfType
+	UClass* NodeContainerClass = FindObject<UClass>(nullptr, TEXT("/Script/InterchangeCore.InterchangeBaseNodeContainer"));
+	if (!NodeContainerClass)
+	{
+		NodeContainerClass = LoadClass<UObject>(nullptr, TEXT("/Script/InterchangeCore.InterchangeBaseNodeContainer"));
+	}
+
+	if (NodeContainerClass)
+	{
+		// Look for IterateNodes function (non-templated version)
+		UFunction* IterateFunc = NodeContainerClass->FindFunctionByName(TEXT("IterateNodes"));
+		if (IterateFunc)
+		{
+			IterateNode->SetFromFunction(IterateFunc);
+		}
+	}
+
+	IterateNode->NodePosX = NodePosition.X;
+	IterateNode->NodePosY = NodePosition.Y;
+
+	TargetGraph->AddNode(IterateNode);
+	IterateNode->CreateNewGuid();
+	IterateNode->PostPlacedNewNode();
+	IterateNode->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("iterate_node_id"), IterateNode->NodeGuid.ToString());
+	ResultObj->SetStringField(TEXT("node_class"), NodeClass);
+	ResultObj->SetStringField(TEXT("graph_name"), TargetGraph->GetName());
+	ResultObj->SetStringField(TEXT("message"), TEXT("Iterate nodes block created. Connect to node container and add processing logic."));
+
+	// List pins
+	TArray<TSharedPtr<FJsonValue>> PinsArray;
+	for (UEdGraphPin* Pin : IterateNode->Pins)
+	{
+		if (Pin)
+		{
+			TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+			PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+			PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+			PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+		}
+	}
+	ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+
+	UE_LOG(LogTemp, Log, TEXT("Added IterateNodes block for %s in pipeline %s"), *NodeClass, *PipelinePath);
+
+	return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCompileInterchangePipeline(const TSharedPtr<FJsonObject>& Params)
+{
+	FString PipelinePath;
+	if (!Params->TryGetStringField(TEXT("pipeline_path"), PipelinePath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'pipeline_path' parameter"));
+	}
+
+	UBlueprint* PipelineBlueprint = LoadPipelineBlueprint(PipelinePath);
+	if (!PipelineBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
+	}
+
+	// Mark as modified - actual compilation will happen when user saves or uses the blueprint
+	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("status"), TEXT("Modified"));
+	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline marked as modified. Compile in Blueprint Editor for full validation."));
+
+	UE_LOG(LogTemp, Log, TEXT("Marked pipeline %s as modified"), *PipelinePath);
+
+	return ResultObj;
 }
