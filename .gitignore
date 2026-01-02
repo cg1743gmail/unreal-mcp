@@ -1,5 +1,7 @@
 # Unreal MCP
 Python/unreal_mcp.log
+sidecar_*.log
+
 
 # AI-related files
 .cursorrules

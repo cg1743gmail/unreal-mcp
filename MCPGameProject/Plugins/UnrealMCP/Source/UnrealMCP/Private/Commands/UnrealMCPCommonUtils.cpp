@@ -29,9 +29,33 @@
 // JSON Utilities
 TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::CreateErrorResponse(const FString& Message)
 {
+    return CreateErrorResponseEx(Message);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::CreateErrorResponseEx(const FString& Message, const FString& Code, const FString& Details)
+{
     TSharedPtr<FJsonObject> ResponseObject = MakeShared<FJsonObject>();
     ResponseObject->SetBoolField(TEXT("success"), false);
+
+    // Backward-compatible field (many clients read this string)
     ResponseObject->SetStringField(TEXT("error"), Message);
+
+    // Structured error fields
+    ResponseObject->SetStringField(TEXT("error_code"), Code);
+    if (!Details.IsEmpty())
+    {
+        ResponseObject->SetStringField(TEXT("error_details"), Details);
+    }
+
+    TSharedPtr<FJsonObject> ErrorInfo = MakeShared<FJsonObject>();
+    ErrorInfo->SetStringField(TEXT("message"), Message);
+    ErrorInfo->SetStringField(TEXT("code"), Code);
+    if (!Details.IsEmpty())
+    {
+        ErrorInfo->SetStringField(TEXT("details"), Details);
+    }
+    ResponseObject->SetObjectField(TEXT("error_info"), ErrorInfo);
+
     return ResponseObject;
 }
 

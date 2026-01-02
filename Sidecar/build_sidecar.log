@@ -1,0 +1,15 @@
+  正在确定要还原的项目…
+  所有项目均是最新的，无法还原。
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(459,13): error CS1519: Invalid token 'return' in a member declaration [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(459,25): error CS1519: Invalid token ';' in a member declaration [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(748,1): error CS1022: 应输入类型、命名空间定义或文件尾 [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+
+生成失败。
+
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(459,13): error CS1519: Invalid token 'return' in a member declaration [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(459,25): error CS1519: Invalid token ';' in a member declaration [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\Program.cs(748,1): error CS1022: 应输入类型、命名空间定义或文件尾 [f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\UnrealMCP.Sidecar.csproj]
+    0 个警告
+    3 个错误
+
+已用时间 00:00:01.11

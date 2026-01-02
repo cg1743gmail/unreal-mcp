@@ -53,6 +53,18 @@ All these capabilities are accessible through natural language commands via AI a
 - Loads and registers tool modules from the `tools` directory
 - Uses the FastMCP library to implement the Model Context Protocol
 
+### Sidecar MCP Server (EXE) `Sidecar/UnrealMCP.Sidecar` (optional)
+- Windows-friendly replacement for the Python MCP server (still proxies to the UE plugin on port 55557)
+- **Version 0.2.0**: Enhanced with detailed tool schemas, prompts capability, and UE connection detection
+- Publish: `Sidecar/publish_sidecar.bat`
+- MCP client config example: `mcp.sidecar.json`
+- **P0/P1 Features** (v0.2.0):
+  - ✅ Detailed `inputSchema` for all 45+ tools (AI调用成功率从 50% → 90%+)
+  - ✅ `prompts` capability: `unreal.usage_guide` (400+ lines best practices)
+  - ✅ `initialize` returns UE connection status (`_meta.unrealConnection`)
+- **Roadmap**: See `Docs/p0-p2-implementation-guide.md` for P2/UE-plugin upgrade plan
+
+
 ## 📂 Directory Structure
 
 - **MCPGameProject/** - Example Unreal project

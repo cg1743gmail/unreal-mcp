@@ -25,6 +25,7 @@ class UNREALMCP_API FUnrealMCPCommonUtils
 public:
     // JSON utilities
     static TSharedPtr<FJsonObject> CreateErrorResponse(const FString& Message);
+    static TSharedPtr<FJsonObject> CreateErrorResponseEx(const FString& Message, const FString& Code = TEXT("ERR_GENERIC"), const FString& Details = TEXT(""));
     static TSharedPtr<FJsonObject> CreateSuccessResponse(const TSharedPtr<FJsonObject>& Data = nullptr);
     static void GetIntArrayFromJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& FieldName, TArray<int32>& OutArray);
     static void GetFloatArrayFromJson(const TSharedPtr<FJsonObject>& JsonObject, const FString& FieldName, TArray<float>& OutArray);

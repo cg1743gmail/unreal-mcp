@@ -1,0 +1,15 @@
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\bin\Release\net8.0\win-x64\UnrealMCP.Sidecar.exe
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\bin\Release\net8.0\win-x64\UnrealMCP.Sidecar.deps.json
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\bin\Release\net8.0\win-x64\UnrealMCP.Sidecar.runtimeconfig.json
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\bin\Release\net8.0\win-x64\UnrealMCP.Sidecar.dll
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\bin\Release\net8.0\win-x64\UnrealMCP.Sidecar.pdb
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.GeneratedMSBuildEditorConfig.editorconfig
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.AssemblyInfoInputs.cache
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.AssemblyInfo.cs
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.csproj.CoreCompileInputs.cache
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.sourcelink.json
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.dll
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\refint\UnrealMCP.Sidecar.dll
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.pdb
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\UnrealMCP.Sidecar.genruntimeconfig.cache
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\UnrealMCP.Sidecar\obj\Release\net8.0\win-x64\ref\UnrealMCP.Sidecar.dll

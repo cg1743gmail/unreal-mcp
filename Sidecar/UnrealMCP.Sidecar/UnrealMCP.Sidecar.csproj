@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>UnrealMCP.Sidecar</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Single-file is optional; keep simple for dev. -->
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+</Project>

@@ -207,139 +207,279 @@ void UUnrealMCPBridge::StopServer()
 FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
-    
+
     // Create a promise to wait for the result
     TPromise<FString> Promise;
     TFuture<FString> Future = Promise.GetFuture();
-    
+
     // Queue execution on Game Thread
     AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, Promise = MoveTemp(Promise)]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
-        
+
+        auto SetStructuredError = [&](const FString& Code, const FString& Message, const FString& Details)
+        {
+            ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
+
+            // Backward-compatible string field
+            ResponseJson->SetStringField(TEXT("error"), Message);
+
+            // Structured fields
+            ResponseJson->SetStringField(TEXT("error_code"), Code);
+            if (!Details.IsEmpty())
+            {
+                ResponseJson->SetStringField(TEXT("error_details"), Details);
+            }
+
+            TSharedPtr<FJsonObject> ErrorInfo = MakeShareable(new FJsonObject);
+            ErrorInfo->SetStringField(TEXT("code"), Code);
+            ErrorInfo->SetStringField(TEXT("message"), Message);
+            if (!Details.IsEmpty())
+            {
+                ErrorInfo->SetStringField(TEXT("details"), Details);
+            }
+            ResponseJson->SetObjectField(TEXT("error_info"), ErrorInfo);
+        };
+
+        auto Dispatch = [&](const FString& InCommandType, const TSharedPtr<FJsonObject>& InParams) -> TSharedPtr<FJsonObject>
+        {
+            if (InCommandType == TEXT("ping"))
+            {
+                TSharedPtr<FJsonObject> Obj = MakeShareable(new FJsonObject);
+                Obj->SetStringField(TEXT("message"), TEXT("pong"));
+                return Obj;
+            }
+
+            // Editor Commands (including actor manipulation)
+            if (InCommandType == TEXT("get_actors_in_level") ||
+                InCommandType == TEXT("find_actors_by_name") ||
+                InCommandType == TEXT("spawn_actor") ||
+                InCommandType == TEXT("create_actor") ||
+                InCommandType == TEXT("delete_actor") ||
+                InCommandType == TEXT("set_actor_transform") ||
+                InCommandType == TEXT("get_actor_properties") ||
+                InCommandType == TEXT("set_actor_property") ||
+                InCommandType == TEXT("spawn_blueprint_actor") ||
+                InCommandType == TEXT("focus_viewport") ||
+                InCommandType == TEXT("take_screenshot"))
+            {
+                return EditorCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            // Blueprint Commands
+            if (InCommandType == TEXT("create_blueprint") ||
+                InCommandType == TEXT("add_component_to_blueprint") ||
+                InCommandType == TEXT("set_component_property") ||
+                InCommandType == TEXT("set_physics_properties") ||
+                InCommandType == TEXT("compile_blueprint") ||
+                InCommandType == TEXT("set_blueprint_property") ||
+                InCommandType == TEXT("set_static_mesh_properties") ||
+                InCommandType == TEXT("set_pawn_properties"))
+            {
+                return BlueprintCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            // Blueprint Node Commands
+            if (InCommandType == TEXT("connect_blueprint_nodes") ||
+                InCommandType == TEXT("add_blueprint_get_self_component_reference") ||
+                InCommandType == TEXT("add_blueprint_self_reference") ||
+                InCommandType == TEXT("find_blueprint_nodes") ||
+                InCommandType == TEXT("add_blueprint_event_node") ||
+                InCommandType == TEXT("add_blueprint_input_action_node") ||
+                InCommandType == TEXT("add_blueprint_function_node") ||
+                InCommandType == TEXT("add_blueprint_get_component_node") ||
+                InCommandType == TEXT("add_blueprint_variable"))
+            {
+                return BlueprintNodeCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            // Project Commands
+            if (InCommandType == TEXT("create_input_mapping"))
+            {
+                return ProjectCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            // UMG Commands
+            if (InCommandType == TEXT("create_umg_widget_blueprint") ||
+                InCommandType == TEXT("add_text_block_to_widget") ||
+                InCommandType == TEXT("add_button_to_widget") ||
+                InCommandType == TEXT("bind_widget_event") ||
+                InCommandType == TEXT("set_text_block_binding") ||
+                InCommandType == TEXT("add_widget_to_viewport"))
+            {
+                return UMGCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            // Interchange Commands (UE 5.6+)
+            if (InCommandType == TEXT("import_model") ||
+                InCommandType == TEXT("create_interchange_blueprint") ||
+                InCommandType == TEXT("create_custom_interchange_blueprint") ||
+                InCommandType == TEXT("get_interchange_assets") ||
+                InCommandType == TEXT("reimport_asset") ||
+                InCommandType == TEXT("get_interchange_info"))
+            {
+                return InterchangeCommands->HandleCommand(InCommandType, InParams);
+            }
+
+            return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+                FString::Printf(TEXT("Unknown command: %s"), *InCommandType),
+                TEXT("ERR_UNKNOWN_COMMAND"),
+                TEXT(""));
+        };
+
+        auto ExtractError = [&](const TSharedPtr<FJsonObject>& ResultObj, FString& OutMsg, FString& OutCode, FString& OutDetails)
+        {
+            OutMsg = ResultObj.IsValid() && ResultObj->HasField(TEXT("error")) ? ResultObj->GetStringField(TEXT("error")) : TEXT("Unknown error");
+            OutCode = ResultObj.IsValid() && ResultObj->HasField(TEXT("error_code")) ? ResultObj->GetStringField(TEXT("error_code")) : TEXT("ERR_GENERIC");
+            OutDetails = ResultObj.IsValid() && ResultObj->HasField(TEXT("error_details")) ? ResultObj->GetStringField(TEXT("error_details")) : TEXT("");
+        };
+
         try
         {
-            TSharedPtr<FJsonObject> ResultJson;
-            
-            if (CommandType == TEXT("ping"))
+            // UE-3: batch execution
+            if (CommandType == TEXT("batch"))
             {
-                ResultJson = MakeShareable(new FJsonObject);
-                ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
-            }
-            // Editor Commands (including actor manipulation)
-            else if (CommandType == TEXT("get_actors_in_level") || 
-                     CommandType == TEXT("find_actors_by_name") ||
-                     CommandType == TEXT("spawn_actor") ||
-                     CommandType == TEXT("create_actor") ||
-                     CommandType == TEXT("delete_actor") || 
-                     CommandType == TEXT("set_actor_transform") ||
-                     CommandType == TEXT("get_actor_properties") ||
-                     CommandType == TEXT("set_actor_property") ||
-                     CommandType == TEXT("spawn_blueprint_actor") ||
-                     CommandType == TEXT("focus_viewport") || 
-                     CommandType == TEXT("take_screenshot"))
-            {
-                ResultJson = EditorCommands->HandleCommand(CommandType, Params);
-            }
-            // Blueprint Commands
-            else if (CommandType == TEXT("create_blueprint") || 
-                     CommandType == TEXT("add_component_to_blueprint") || 
-                     CommandType == TEXT("set_component_property") || 
-                     CommandType == TEXT("set_physics_properties") || 
-                     CommandType == TEXT("compile_blueprint") || 
-                     CommandType == TEXT("set_blueprint_property") || 
-                     CommandType == TEXT("set_static_mesh_properties") ||
-                     CommandType == TEXT("set_pawn_properties"))
-            {
-                ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
-            }
-            // Blueprint Node Commands
-            else if (CommandType == TEXT("connect_blueprint_nodes") || 
-                     CommandType == TEXT("add_blueprint_get_self_component_reference") ||
-                     CommandType == TEXT("add_blueprint_self_reference") ||
-                     CommandType == TEXT("find_blueprint_nodes") ||
-                     CommandType == TEXT("add_blueprint_event_node") ||
-                     CommandType == TEXT("add_blueprint_input_action_node") ||
-                     CommandType == TEXT("add_blueprint_function_node") ||
-                     CommandType == TEXT("add_blueprint_get_component_node") ||
-                     CommandType == TEXT("add_blueprint_variable"))
-            {
-                ResultJson = BlueprintNodeCommands->HandleCommand(CommandType, Params);
-            }
-            // Project Commands
-            else if (CommandType == TEXT("create_input_mapping"))
-            {
-                ResultJson = ProjectCommands->HandleCommand(CommandType, Params);
-            }
-            // UMG Commands
-            else if (CommandType == TEXT("create_umg_widget_blueprint") ||
-                     CommandType == TEXT("add_text_block_to_widget") ||
-                     CommandType == TEXT("add_button_to_widget") ||
-                     CommandType == TEXT("bind_widget_event") ||
-                     CommandType == TEXT("set_text_block_binding") ||
-                     CommandType == TEXT("add_widget_to_viewport"))
-            {
-                ResultJson = UMGCommands->HandleCommand(CommandType, Params);
-            }
-            // Interchange Commands (UE 5.6+)
-            else if (CommandType == TEXT("import_model") ||
-                     CommandType == TEXT("create_interchange_blueprint") ||
-                     CommandType == TEXT("create_custom_interchange_blueprint") ||
-                     CommandType == TEXT("get_interchange_assets") ||
-                     CommandType == TEXT("reimport_asset") ||
-                     CommandType == TEXT("get_interchange_info"))
-            {
-                ResultJson = InterchangeCommands->HandleCommand(CommandType, Params);
-            }
-            else
-            {
-                ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
-                ResponseJson->SetStringField(TEXT("error"), FString::Printf(TEXT("Unknown command: %s"), *CommandType));
-                
-                FString ResultString;
-                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
-                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-                Promise.SetValue(ResultString);
-                return;
-            }
-            
-            // Check if the result contains an error
-            bool bSuccess = true;
-            FString ErrorMessage;
-            
-            if (ResultJson->HasField(TEXT("success")))
-            {
-                bSuccess = ResultJson->GetBoolField(TEXT("success"));
-                if (!bSuccess && ResultJson->HasField(TEXT("error")))
+                bool bStopOnError = true;
+                if (Params.IsValid() && Params->HasField(TEXT("stop_on_error")))
                 {
-                    ErrorMessage = ResultJson->GetStringField(TEXT("error"));
+                    bStopOnError = Params->GetBoolField(TEXT("stop_on_error"));
+                }
+
+                const TArray<TSharedPtr<FJsonValue>>* CommandsArray = nullptr;
+                if (!Params.IsValid() || !Params->TryGetArrayField(TEXT("commands"), CommandsArray) || !CommandsArray)
+                {
+                    SetStructuredError(TEXT("ERR_BAD_REQUEST"), TEXT("Missing 'commands' array"), TEXT("batch expects params.commands: [{type, params}]"));
+                }
+                else
+                {
+                    TArray<TSharedPtr<FJsonValue>> Items;
+                    int32 OkCount = 0;
+                    int32 ErrCount = 0;
+
+                    for (int32 Index = 0; Index < CommandsArray->Num(); ++Index)
+                    {
+                        const TSharedPtr<FJsonValue>& V = (*CommandsArray)[Index];
+                        TSharedPtr<FJsonObject> CmdObj = V.IsValid() ? V->AsObject() : nullptr;
+                        FString SubType;
+                        TSharedPtr<FJsonObject> SubParams = MakeShareable(new FJsonObject);
+
+                        if (!CmdObj.IsValid() || !CmdObj->TryGetStringField(TEXT("type"), SubType))
+                        {
+                            ++ErrCount;
+                            TSharedPtr<FJsonObject> Item = MakeShareable(new FJsonObject);
+                            Item->SetNumberField(TEXT("index"), Index);
+                            Item->SetBoolField(TEXT("success"), false);
+                            Item->SetStringField(TEXT("error"), TEXT("Missing command.type"));
+                            Item->SetStringField(TEXT("error_code"), TEXT("ERR_BAD_REQUEST"));
+                            Items.Add(MakeShareable(new FJsonValueObject(Item)));
+                            if (bStopOnError) break;
+                            continue;
+                        }
+
+                        if (CmdObj->HasField(TEXT("params")))
+                        {
+                            TSharedPtr<FJsonValue> PV = CmdObj->TryGetField(TEXT("params"));
+                            if (PV.IsValid() && PV->Type == EJson::Object)
+                            {
+                                SubParams = PV->AsObject();
+                            }
+                        }
+
+                        TSharedPtr<FJsonObject> SubResult = Dispatch(SubType, SubParams);
+                        bool bSubSuccess = true;
+                        if (SubResult.IsValid() && SubResult->HasField(TEXT("success")))
+                        {
+                            bSubSuccess = SubResult->GetBoolField(TEXT("success"));
+                        }
+
+                        TSharedPtr<FJsonObject> Item = MakeShareable(new FJsonObject);
+                        Item->SetNumberField(TEXT("index"), Index);
+                        Item->SetStringField(TEXT("type"), SubType);
+                        Item->SetBoolField(TEXT("success"), bSubSuccess);
+
+                        if (bSubSuccess)
+                        {
+                            ++OkCount;
+                            Item->SetObjectField(TEXT("result"), SubResult);
+                        }
+                        else
+                        {
+                            ++ErrCount;
+                            FString ErrMsg, ErrCode, ErrDetails;
+                            ExtractError(SubResult, ErrMsg, ErrCode, ErrDetails);
+                            Item->SetStringField(TEXT("error"), ErrMsg);
+                            Item->SetStringField(TEXT("error_code"), ErrCode);
+                            if (!ErrDetails.IsEmpty())
+                            {
+                                Item->SetStringField(TEXT("error_details"), ErrDetails);
+                            }
+                            if (SubResult.IsValid() && SubResult->HasField(TEXT("error_info")))
+                            {
+                                Item->SetObjectField(TEXT("error_info"), SubResult->GetObjectField(TEXT("error_info")));
+                            }
+
+                            if (bStopOnError) 
+                            {
+                                Items.Add(MakeShareable(new FJsonValueObject(Item)));
+                                break;
+                            }
+                        }
+
+                        Items.Add(MakeShareable(new FJsonValueObject(Item)));
+                    }
+
+                    TSharedPtr<FJsonObject> Summary = MakeShareable(new FJsonObject);
+                    Summary->SetNumberField(TEXT("total"), CommandsArray->Num());
+                    Summary->SetNumberField(TEXT("ok"), OkCount);
+                    Summary->SetNumberField(TEXT("error"), ErrCount);
+                    Summary->SetBoolField(TEXT("stop_on_error"), bStopOnError);
+
+                    TSharedPtr<FJsonObject> BatchResult = MakeShareable(new FJsonObject);
+                    BatchResult->SetArrayField(TEXT("items"), Items);
+                    BatchResult->SetObjectField(TEXT("summary"), Summary);
+
+                    ResponseJson->SetObjectField(TEXT("result"), BatchResult);
+                    ResponseJson->SetStringField(TEXT("status"), ErrCount == 0 ? TEXT("success") : TEXT("error"));
+                    if (ErrCount != 0)
+                    {
+                        ResponseJson->SetStringField(TEXT("error"), TEXT("Batch contains error(s)"));
+                        ResponseJson->SetStringField(TEXT("error_code"), TEXT("ERR_BATCH"));
+                    }
                 }
             }
-            
-            if (bSuccess)
-            {
-                // Set success status and include the result
-                ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
-                ResponseJson->SetObjectField(TEXT("result"), ResultJson);
-            }
             else
             {
-                // Set error status and include the error message
-                ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
-                ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
+                TSharedPtr<FJsonObject> ResultJson = Dispatch(CommandType, Params);
+
+                bool bSuccess = true;
+                if (ResultJson.IsValid() && ResultJson->HasField(TEXT("success")))
+                {
+                    bSuccess = ResultJson->GetBoolField(TEXT("success"));
+                }
+
+                if (bSuccess)
+                {
+                    ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
+                    ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+                }
+                else
+                {
+                    FString ErrMsg, ErrCode, ErrDetails;
+                    ExtractError(ResultJson, ErrMsg, ErrCode, ErrDetails);
+                    SetStructuredError(ErrCode, ErrMsg, ErrDetails);
+                }
             }
         }
         catch (const std::exception& e)
         {
-            ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
-            ResponseJson->SetStringField(TEXT("error"), UTF8_TO_TCHAR(e.what()));
+            SetStructuredError(TEXT("ERR_EXCEPTION"), UTF8_TO_TCHAR(e.what()), TEXT("std::exception"));
         }
-        
+
         FString ResultString;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
         FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
         Promise.SetValue(ResultString);
     });
-    
+
     return Future.Get();
 }
