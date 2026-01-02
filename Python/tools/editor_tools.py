@@ -366,4 +366,77 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def spawn_multiple_boxes(
+        ctx: Context,
+        count: int = 10,
+        spacing: float = 50.0,
+        starting_location: List[float] = [0.0, 0.0, 50.0]
+    ) -> Dict[str, Any]:
+        """
+        Spawn multiple box actors in the current level with automatic spacing.
+        
+        Args:
+            ctx: The MCP context
+            count: Number of boxes to create
+            spacing: Distance between boxes along the x-axis
+            starting_location: The [x, y, z] world location for the first box
+            
+        Returns:
+            Dict containing summary information about the created boxes
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            created_boxes = []
+            errors = []
+            
+            for i in range(count):
+                # Calculate location for each box along the x-axis
+                box_location = [
+                    starting_location[0] + (i * spacing),
+                    starting_location[1],
+                    starting_location[2]
+                ]
+                
+                # Generate unique name
+                box_name = f"Box_{i:03d}"
+                
+                # Create box using the existing spawn_actor function
+                params = {
+                    "name": box_name,
+                    "type": "StaticMeshActor",
+                    "location": box_location,
+                    "rotation": [0.0, 0.0, 0.0]
+                }
+                
+                response = unreal.send_command("spawn_actor", params)
+                
+                if response and response.get("status") == "success":
+                    created_boxes.append(box_name)
+                    logger.info(f"Created box {box_name} at location {box_location}")
+                else:
+                    error_msg = response.get("error", "Unknown error") if response else "No response"
+                    errors.append(f"Failed to create box {box_name}: {error_msg}")
+                    logger.error(errors[-1])
+            
+            return {
+                "success": len(errors) == 0,
+                "total_boxes": count,
+                "created_boxes": created_boxes,
+                "failed_boxes": len(errors),
+                "errors": errors,
+                "message": f"Successfully created {len(created_boxes)} out of {count} boxes"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error creating multiple boxes: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Editor tools registered successfully")

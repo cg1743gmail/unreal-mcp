@@ -5,7 +5,7 @@
 
 /**
  * Handler class for Interchange-related MCP commands
- * Supports UE 5.6+ Interchange system for importing and creating assets
+ * Supports UE 5.5+ Interchange system for importing and creating assets
  * Based on Epic Games best practices for Interchange pipelines
  */
 class UNREALMCP_API FUnrealMCPInterchangeCommands
@@ -25,14 +25,27 @@ private:
 	TSharedPtr<FJsonObject> HandleGetInterchangeAssets(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleReimportAsset(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetInterchangeInfo(const TSharedPtr<FJsonObject>& Params);
+	
+	// Interchange Pipeline Blueprint commands
+	TSharedPtr<FJsonObject> HandleCreateInterchangePipelineBlueprint(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetInterchangePipelines(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleConfigureInterchangePipeline(const TSharedPtr<FJsonObject>& Params);
+	
+	// Interchange Pipeline Graph Node Operations
+	TSharedPtr<FJsonObject> HandleGetInterchangePipelineGraph(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddInterchangePipelineFunctionOverride(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddInterchangePipelineNode(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleConnectInterchangePipelineNodes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleFindInterchangePipelineNodes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddInterchangeIterateNodesBlock(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleCompileInterchangePipeline(const TSharedPtr<FJsonObject>& Params);
 
 	// Helper functions for Interchange operations
 	bool IsValidInterchangeFile(const FString& FilePath) const;
 	TArray<FString> GetSupportedInterchangeFormats() const;
 	TSharedPtr<FJsonObject> GetAssetMetadata(const FString& AssetPath) const;
 	
-	// Interchange Blueprint utilities
-	class UInterchangeGenericAsset* CreateInterchangeAsset(const FString& AssetName, const FString& PackagePath);
-	bool ConfigureInterchangeAssetWithMesh(class UInterchangeGenericAsset* Asset, const FString& MeshPath);
-	bool SetupInterchangeBlueprintPipeline(const FString& BlueprintPath, const TSharedPtr<FJsonObject>& PipelineConfig);
+	// Helper functions for Pipeline graph operations
+	UBlueprint* LoadPipelineBlueprint(const FString& PipelinePath) const;
+	class UEdGraph* FindOrCreateFunctionGraph(UBlueprint* Blueprint, const FString& FunctionName) const;
 };
