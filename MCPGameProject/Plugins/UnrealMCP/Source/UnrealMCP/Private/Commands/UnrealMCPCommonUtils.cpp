@@ -1383,7 +1383,8 @@ bool FUnrealMCPCommonUtils::GetObjectProperty(UObject* Object, const FString& Pr
     void* PropertyAddr = Property->ContainerPtrToValuePtr<void>(Object);
 
     FString ExportText;
-    Property->ExportTextItem(ExportText, PropertyAddr, nullptr, Object, PPF_None);
+    Property->ExportTextItem_Direct(ExportText, PropertyAddr, nullptr, Object, PPF_None);
+
     if (OutExportText)
         *OutExportText = ExportText;
 
