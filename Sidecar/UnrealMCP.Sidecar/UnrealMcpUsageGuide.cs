@@ -52,11 +52,16 @@ public static class UnrealMcpUsageGuide
 ## Blueprint Management
 - `create_blueprint(name, parent_class)` - Create new Blueprint classes
 - `add_component_to_blueprint(blueprint_name, component_type, component_name)` - Add components
+- `list_blueprint_components(blueprint_name, blueprint_path="")` - List Blueprint components (SCS)
+- `get_component_property(blueprint_name, component_name, property_name, blueprint_path="")` - Read component template property
+- `set_component_property(blueprint_name, component_name, property_name, property_value)` - Set component template property
 - `set_static_mesh_properties(blueprint_name, component_name, static_mesh)` - Configure meshes
 - `set_physics_properties(blueprint_name, component_name)` - Configure physics
+- `get_blueprint_property(blueprint_name, property_name, blueprint_path="")` - Read Blueprint CDO property
+- `set_blueprint_property(blueprint_name, property_name, property_value)` - Set Blueprint CDO property
 - `compile_blueprint(blueprint_name)` - Compile Blueprint changes
-- `set_blueprint_property(blueprint_name, property_name, property_value)` - Set properties
 - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
+
 
 ## Blueprint Node Management
 - `add_blueprint_event_node(blueprint_name, event_name)` - Add event nodes (e.g., ReceiveBeginPlay, ReceiveTick)

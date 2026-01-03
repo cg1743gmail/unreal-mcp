@@ -10,7 +10,9 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonWriter.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Engine/StaticMeshActor.h"
+
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
@@ -75,6 +77,9 @@ UUnrealMCPBridge::UUnrealMCPBridge()
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
 {
+    // Make sure server is stopped even if Deinitialize was not called.
+    StopServer();
+
     EditorCommands.Reset();
     BlueprintCommands.Reset();
     BlueprintNodeCommands.Reset();
@@ -92,6 +97,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ListenerSocket = nullptr;
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
+    ServerRunnable = nullptr;
     Port = MCP_SERVER_PORT;
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
@@ -154,16 +160,23 @@ void UUnrealMCPBridge::StartServer()
     bIsRunning = true;
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server started on %s:%d"), *ServerAddress.ToString(), Port);
 
-    // Start server thread
+    // Start server thread (keep runnable pointer to manage lifecycle)
+    ServerRunnable = new FMCPServerRunnable(this, ListenerSocket);
     ServerThread = FRunnableThread::Create(
-        new FMCPServerRunnable(this, ListenerSocket),
+        ServerRunnable,
         TEXT("UnrealMCPServerThread"),
         0, TPri_Normal
     );
 
+
     if (!ServerThread)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to create server thread"));
+
+        // Avoid leaking runnable when thread creation fails.
+        delete ServerRunnable;
+        ServerRunnable = nullptr;
+
         StopServer();
         return;
     }
@@ -180,12 +193,25 @@ void UUnrealMCPBridge::StopServer()
     bIsRunning = false;
 
     // Clean up thread
+    if (ServerRunnable)
+    {
+        ServerRunnable->Stop();
+    }
+
     if (ServerThread)
     {
-        ServerThread->Kill(true);
+        // Wait for Run() loop to exit before destroying sockets.
+        ServerThread->WaitForCompletion();
         delete ServerThread;
         ServerThread = nullptr;
     }
+
+    if (ServerRunnable)
+    {
+        delete ServerRunnable;
+        ServerRunnable = nullptr;
+    }
+
 
     // Close sockets
     if (ConnectionSocket.IsValid())
@@ -206,19 +232,44 @@ void UUnrealMCPBridge::StopServer()
 // Execute a command received from a client
 FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
-    UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
+    FString McpRequestId;
+    FString McpTraceId;
+    FString McpToken;
+
+    if (Params.IsValid() && Params->HasField(TEXT("_mcp")))
+    {
+        const TSharedPtr<FJsonObject> McpObj = Params->GetObjectField(TEXT("_mcp"));
+        if (McpObj.IsValid())
+        {
+            McpObj->TryGetStringField(TEXT("request_id"), McpRequestId);
+            McpObj->TryGetStringField(TEXT("trace_id"), McpTraceId);
+            McpObj->TryGetStringField(TEXT("token"), McpToken);
+        }
+    }
+
+    if (!McpRequestId.IsEmpty())
+    {
+        UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge[%s]: Executing command: %s"), *McpRequestId, *CommandType);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
+    }
+
 
     // Create a promise to wait for the result
     TPromise<FString> Promise;
     TFuture<FString> Future = Promise.GetFuture();
 
     // Queue execution on Game Thread
-    AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, Promise = MoveTemp(Promise)]() mutable
+    AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, McpRequestId, McpTraceId, McpToken, Promise = MoveTemp(Promise)]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
 
         auto SetStructuredError = [&](const FString& Code, const FString& Message, const FString& Details)
         {
+            // UE-2: consistent, machine-friendly top-level success flag
+            ResponseJson->SetBoolField(TEXT("success"), false);
             ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
 
             // Backward-compatible string field
@@ -232,8 +283,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
 
             TSharedPtr<FJsonObject> ErrorInfo = MakeShareable(new FJsonObject);
-            ErrorInfo->SetStringField(TEXT("code"), Code);
             ErrorInfo->SetStringField(TEXT("message"), Message);
+            ErrorInfo->SetStringField(TEXT("code"), Code);
             if (!Details.IsEmpty())
             {
                 ErrorInfo->SetStringField(TEXT("details"), Details);
@@ -274,7 +325,11 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 InCommandType == TEXT("compile_blueprint") ||
                 InCommandType == TEXT("set_blueprint_property") ||
                 InCommandType == TEXT("set_static_mesh_properties") ||
-                InCommandType == TEXT("set_pawn_properties"))
+                InCommandType == TEXT("set_pawn_properties") ||
+                InCommandType == TEXT("list_blueprint_components") ||
+                InCommandType == TEXT("get_component_property") ||
+                InCommandType == TEXT("get_blueprint_property"))
+
             {
                 return BlueprintCommands->HandleCommand(InCommandType, InParams);
             }
@@ -336,9 +391,64 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
 
         try
         {
+            // Security gate: editor-only
+            if (!GIsEditor)
+            {
+                SetStructuredError(TEXT("ERR_EDITOR_ONLY"), TEXT("UnrealMCP commands require Editor context"), TEXT(""));
+                FString ResultString;
+                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
+                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
+                Promise.SetValue(ResultString);
+                return;
+            }
+
+            // Security gate: optional token enforcement
+            FString RequiredToken;
+            if (GConfig)
+            {
+                GConfig->GetString(TEXT("UnrealMCP"), TEXT("SecurityToken"), RequiredToken, GEngineIni);
+            }
+            if (!RequiredToken.IsEmpty() && McpToken != RequiredToken)
+            {
+                SetStructuredError(TEXT("ERR_UNAUTHORIZED"), TEXT("Unauthorized"), TEXT("Missing or invalid SecurityToken"));
+                FString ResultString;
+                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
+                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
+                Promise.SetValue(ResultString);
+                return;
+            }
+
+            // Security gate: read-only mode (best-effort classification)
+            bool bReadOnly = false;
+            if (GConfig)
+            {
+                GConfig->GetBool(TEXT("UnrealMCP"), TEXT("bReadOnly"), bReadOnly, GEngineIni);
+            }
+            auto IsWriteCommand = [](const FString& InType) -> bool
+            {
+                return InType.StartsWith(TEXT("create_")) ||
+                    InType.StartsWith(TEXT("add_")) ||
+                    InType.StartsWith(TEXT("set_")) ||
+                    InType.StartsWith(TEXT("delete_")) ||
+                    InType.StartsWith(TEXT("spawn_")) ||
+                    InType.StartsWith(TEXT("import_")) ||
+                    InType.StartsWith(TEXT("reimport_")) ||
+                    (InType == TEXT("batch"));
+            };
+            if (bReadOnly && IsWriteCommand(CommandType))
+            {
+                SetStructuredError(TEXT("ERR_READ_ONLY"), TEXT("Server is in read-only mode"), TEXT("Disable [UnrealMCP] bReadOnly or run against an allowed editor session"));
+                FString ResultString;
+                TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
+                FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
+                Promise.SetValue(ResultString);
+                return;
+            }
+
             // UE-3: batch execution
             if (CommandType == TEXT("batch"))
             {
+
                 bool bStopOnError = true;
                 if (Params.IsValid() && Params->HasField(TEXT("stop_on_error")))
                 {
@@ -439,8 +549,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     BatchResult->SetObjectField(TEXT("summary"), Summary);
 
                     ResponseJson->SetObjectField(TEXT("result"), BatchResult);
-                    ResponseJson->SetStringField(TEXT("status"), ErrCount == 0 ? TEXT("success") : TEXT("error"));
-                    if (ErrCount != 0)
+                    const bool bBatchSuccess = (ErrCount == 0);
+                    ResponseJson->SetBoolField(TEXT("success"), bBatchSuccess);
+                    ResponseJson->SetStringField(TEXT("status"), bBatchSuccess ? TEXT("success") : TEXT("error"));
+
+
+
+                    if (!bBatchSuccess)
                     {
                         ResponseJson->SetStringField(TEXT("error"), TEXT("Batch contains error(s)"));
                         ResponseJson->SetStringField(TEXT("error_code"), TEXT("ERR_BATCH"));
@@ -459,6 +574,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
 
                 if (bSuccess)
                 {
+                    ResponseJson->SetBoolField(TEXT("success"), true);
                     ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
                     ResponseJson->SetObjectField(TEXT("result"), ResultJson);
                 }
@@ -468,6 +584,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     ExtractError(ResultJson, ErrMsg, ErrCode, ErrDetails);
                     SetStructuredError(ErrCode, ErrMsg, ErrDetails);
                 }
+
+
+
             }
         }
         catch (const std::exception& e)

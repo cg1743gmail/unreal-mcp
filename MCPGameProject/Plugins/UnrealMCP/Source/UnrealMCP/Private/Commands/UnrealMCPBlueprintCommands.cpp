@@ -12,6 +12,9 @@
 #include "Components/SphereComponent.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/CompilerResultsLog.h"
+#include "Logging/TokenizedMessage.h"
+#include "ScopedTransaction.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "UObject/Field.h"
@@ -63,9 +66,22 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     {
         return HandleSetPawnProperties(Params);
     }
-    
+    else if (CommandType == TEXT("list_blueprint_components"))
+    {
+        return HandleListBlueprintComponents(Params);
+    }
+    else if (CommandType == TEXT("get_component_property"))
+    {
+        return HandleGetComponentProperty(Params);
+    }
+    else if (CommandType == TEXT("get_blueprint_property"))
+    {
+        return HandleGetBlueprintProperty(Params);
+    }
+
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
 }
+
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const TSharedPtr<FJsonObject>& Params)
 {
@@ -76,10 +92,49 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Check if blueprint already exists
-    FString PackagePath = TEXT("/Game/Blueprints/");
+    // Resolve destination asset path (safe + configurable)
     FString AssetName = BlueprintName;
-    if (UEditorAssetLibrary::DoesAssetExist(PackagePath + AssetName))
+
+    FString FolderPath = FUnrealMCPCommonUtils::GetDefaultBlueprintFolder();
+    Params->TryGetStringField(TEXT("package_path"), FolderPath);
+    Params->TryGetStringField(TEXT("folder_path"), FolderPath);
+
+    FString RequestedAssetPath;
+    Params->TryGetStringField(TEXT("asset_path"), RequestedAssetPath);
+    Params->TryGetStringField(TEXT("blueprint_path"), RequestedAssetPath); // alias
+
+    FString FullAssetPath;
+    FString Err;
+    if (!RequestedAssetPath.IsEmpty())
+    {
+        if (!FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(RequestedAssetPath, FullAssetPath, Err))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid asset_path"), TEXT("ERR_INVALID_PATH"), Err);
+        }
+    }
+    else
+    {
+        if (!FUnrealMCPCommonUtils::NormalizeLongPackageFolder(FolderPath, FolderPath, Err))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid folder_path"), TEXT("ERR_INVALID_PATH"), Err);
+        }
+        FullAssetPath = FolderPath + AssetName;
+    }
+
+    // Safety: restrict writes to an allowlist of /Game roots.
+    if (!FUnrealMCPCommonUtils::IsWritePathAllowed(FullAssetPath, Err))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Write path not allowed"), TEXT("ERR_WRITE_PATH_NOT_ALLOWED"), Err);
+    }
+
+    FString ObjectPath;
+    if (!FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(FullAssetPath, ObjectPath, Err))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid destination path"), TEXT("ERR_INVALID_PATH"), Err);
+    }
+
+    // Check if blueprint already exists
+    if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
     }
@@ -142,7 +197,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
     Factory->ParentClass = SelectedParentClass;
 
     // Create the blueprint
-    UPackage* Package = CreatePackage(*(PackagePath + AssetName));
+    UPackage* Package = CreatePackage(*FullAssetPath);
     UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(UBlueprint::StaticClass(), Package, *AssetName, RF_Standalone | RF_Public, nullptr, GWarn));
 
     if (NewBlueprint)
@@ -155,11 +210,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
 
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("name"), AssetName);
-        ResultObj->SetStringField(TEXT("path"), PackagePath + AssetName);
+        ResultObj->SetStringField(TEXT("path"), FullAssetPath); // legacy
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath); // legacy
+        FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, FullAssetPath);
         return ResultObj;
     }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create blueprint"));
+
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBlueprint(const TSharedPtr<FJsonObject>& Params)
@@ -183,12 +241,30 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
+
 
     // Create the component - dynamically find the component class by name
     UClass* ComponentClass = nullptr;
@@ -254,6 +330,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("component_name"), ComponentName);
         ResultObj->SetStringField(TEXT("component_type"), ComponentType);
+        FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
         return ResultObj;
     }
 
@@ -308,19 +385,35 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
         UE_LOG(LogTemp, Warning, TEXT("SetComponentProperty - No property_value provided"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Blueprint not found: %s"), *BlueprintName);
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - Blueprint not found or ambiguous: %s"), *BlueprintName);
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
-    else
-    {
-        UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Blueprint found: %s (Class: %s)"), 
-            *BlueprintName, 
-            Blueprint->GeneratedClass ? *Blueprint->GeneratedClass->GetName() : TEXT("NULL"));
-    }
+
+    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Blueprint resolved: %s (Class: %s)"),
+        *ResolvedPath,
+        Blueprint->GeneratedClass ? *Blueprint->GeneratedClass->GetName() : TEXT("NULL"));
+
 
     // Find the component
     USCS_Node* ComponentNode = nullptr;
@@ -495,6 +588,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                 ResultObj->SetStringField(TEXT("component"), ComponentName);
                 ResultObj->SetStringField(TEXT("property"), PropertyName);
                 ResultObj->SetBoolField(TEXT("success"), true);
+                FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
                 return ResultObj;
             }
             else
@@ -548,11 +642,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
         {
             if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
             {
-                // Handle vector properties
-                UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Property is a struct: %s"), 
+                // Handle common struct properties
+                UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Property is a struct: %s"),
                     StructProp->Struct ? *StructProp->Struct->GetName() : TEXT("NULL"));
-                    
-                if (StructProp->Struct == TBaseStructure<FVector>::Get())
+
+                const void* StructType = StructProp->Struct;
+
+                if (StructType == TBaseStructure<FVector>::Get())
                 {
                     if (JsonValue->Type == EJson::Array)
                     {
@@ -566,7 +662,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                                 Arr[2]->AsNumber()
                             );
                             void* PropertyAddr = StructProp->ContainerPtrToValuePtr<void>(ComponentTemplate);
-                            UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting Vector(%f, %f, %f)"), 
+                            UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting Vector(%f, %f, %f)"),
                                 Vec.X, Vec.Y, Vec.Z);
                             StructProp->CopySingleValue(PropertyAddr, &Vec);
                             bSuccess = true;
@@ -583,7 +679,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                         float Value = JsonValue->AsNumber();
                         FVector Vec(Value, Value, Value);
                         void* PropertyAddr = StructProp->ContainerPtrToValuePtr<void>(ComponentTemplate);
-                        UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting Vector(%f, %f, %f) from scalar"), 
+                        UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting Vector(%f, %f, %f) from scalar"),
                             Vec.X, Vec.Y, Vec.Z);
                         StructProp->CopySingleValue(PropertyAddr, &Vec);
                         bSuccess = true;
@@ -594,10 +690,41 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                         UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *ErrorMessage);
                     }
                 }
+                else if (StructType == TBaseStructure<FRotator>::Get())
+                {
+                    // Accept array input [Pitch, Yaw, Roll]
+                    if (JsonValue->Type == EJson::Array)
+                    {
+                        const TArray<TSharedPtr<FJsonValue>>& Arr = JsonValue->AsArray();
+                        if (Arr.Num() == 3)
+                        {
+                            FRotator Rot(
+                                Arr[0]->AsNumber(),
+                                Arr[1]->AsNumber(),
+                                Arr[2]->AsNumber()
+                            );
+                            void* PropertyAddr = StructProp->ContainerPtrToValuePtr<void>(ComponentTemplate);
+                            UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Setting Rotator(P=%f, Y=%f, R=%f)"),
+                                Rot.Pitch, Rot.Yaw, Rot.Roll);
+                            StructProp->CopySingleValue(PropertyAddr, &Rot);
+                            bSuccess = true;
+                        }
+                        else
+                        {
+                            ErrorMessage = FString::Printf(TEXT("Rotator property requires 3 values [Pitch,Yaw,Roll], got %d"), Arr.Num());
+                            UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *ErrorMessage);
+                        }
+                    }
+                    else
+                    {
+                        ErrorMessage = TEXT("Rotator property requires an array of 3 numbers [Pitch,Yaw,Roll]");
+                        UE_LOG(LogTemp, Error, TEXT("SetComponentProperty - %s"), *ErrorMessage);
+                    }
+                }
                 else
                 {
                     // Handle other struct properties using default handler
-                    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Using generic struct handler for %s"), 
+                    UE_LOG(LogTemp, Log, TEXT("SetComponentProperty - Using generic struct handler for %s"),
                         *PropertyName);
                     bSuccess = FUnrealMCPCommonUtils::SetObjectProperty(ComponentTemplate, PropertyName, JsonValue, ErrorMessage);
                     if (!bSuccess)
@@ -606,6 +733,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
                     }
                 }
             }
+
             else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
             {
                 // Handle enum properties
@@ -735,6 +863,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
             ResultObj->SetStringField(TEXT("component"), ComponentName);
             ResultObj->SetStringField(TEXT("property"), PropertyName);
             ResultObj->SetBoolField(TEXT("success"), true);
+            FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
             return ResultObj;
         }
         else
@@ -764,12 +893,30 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
+
 
     // Find the component
     USCS_Node* ComponentNode = nullptr;
@@ -822,6 +969,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("component"), ComponentName);
+    FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
     return ResultObj;
 }
 
@@ -834,19 +982,87 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
 
-    // Compile the blueprint
-    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    // Compile with structured diagnostics.
+    FCompilerResultsLog Results;
+    Results.bAnnotateMentionedNodes = true;
+    Results.SetSourcePath(Blueprint->GetPathName());
+
+    // Note: This is intentionally not wrapped in a transaction.
+    FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &Results);
+
+    const bool bCompileOk = (Results.NumErrors == 0);
+
+    TArray<TSharedPtr<FJsonValue>> Diagnostics;
+    Diagnostics.Reserve(Results.Messages.Num());
+
+    for (const TSharedRef<FTokenizedMessage>& Msg : Results.Messages)
+    {
+        TSharedPtr<FJsonObject> D = MakeShared<FJsonObject>();
+        D->SetStringField(TEXT("message"), Msg->ToText().ToString());
+
+        FString Severity = TEXT("info");
+        switch (Msg->GetSeverity())
+        {
+        case EMessageSeverity::Error:
+            Severity = TEXT("error");
+            break;
+        case EMessageSeverity::Warning:
+            Severity = TEXT("warning");
+            break;
+        default:
+            break;
+        }
+        D->SetStringField(TEXT("severity"), Severity);
+
+        Diagnostics.Add(MakeShared<FJsonValueObject>(D));
+    }
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("name"), BlueprintName);
     ResultObj->SetBoolField(TEXT("compiled"), true);
+
+    // New structured outputs
+    ResultObj->SetBoolField(TEXT("compile_success"), bCompileOk);
+    ResultObj->SetNumberField(TEXT("num_errors"), Results.NumErrors);
+    ResultObj->SetNumberField(TEXT("num_warnings"), Results.NumWarnings);
+    ResultObj->SetArrayField(TEXT("diagnostics"), Diagnostics);
+
+    // Canonical path outputs
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ResolvedPath.IsEmpty())
+    {
+        FString ObjectPath;
+        FString PathErr;
+        if (FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+        {
+            ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+        }
+    }
+
     return ResultObj;
 }
 
@@ -865,12 +1081,30 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSpawnBlueprintActor(c
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
+
 
     // Get transform parameters
     FVector Location(0.0f, 0.0f, 0.0f);
@@ -921,15 +1155,38 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    if (!Blueprint->GeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no generated class"));
     }
 
     // Get the default object
     UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+
     if (!DefaultObject)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get default object"));
@@ -949,6 +1206,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
             TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
             ResultObj->SetStringField(TEXT("property"), PropertyName);
             ResultObj->SetBoolField(TEXT("success"), true);
+            FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
             return ResultObj;
         }
         else
@@ -975,12 +1233,30 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
+
 
     // Find the component
     USCS_Node* ComponentNode = nullptr;
@@ -1030,6 +1306,7 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("component"), ComponentName);
+    FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
     return ResultObj;
 }
 
@@ -1042,15 +1319,38 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    if (!Blueprint->GeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no generated class"));
     }
 
     // Get the default object
     UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+
     if (!DefaultObject)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get default object"));
@@ -1157,4 +1457,277 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
     ResponseObj->SetBoolField(TEXT("success"), bAnyPropertiesSet);
     ResponseObj->SetObjectField(TEXT("results"), ResultsObj);
     return ResponseObj;
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleListBlueprintComponents(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        // Compat: allow legacy field name
+        Params->TryGetStringField(TEXT("name"), BlueprintName);
+    }
+    if (BlueprintName.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
+    if (!Blueprint)
+    {
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
+    }
+
+    // Root node set for convenience
+    TSet<USCS_Node*> RootNodes;
+    for (USCS_Node* Root : Blueprint->SimpleConstructionScript->GetRootNodes())
+    {
+        RootNodes.Add(Root);
+    }
+
+    TArray<TSharedPtr<FJsonValue>> Components;
+    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    {
+        if (!Node)
+            continue;
+
+        UObject* Template = Node->ComponentTemplate;
+        const FString CompName = Node->GetVariableName().ToString();
+
+        TSharedPtr<FJsonObject> CObj = MakeShared<FJsonObject>();
+        CObj->SetStringField(TEXT("component_name"), CompName);
+
+        if (Template)
+        {
+            CObj->SetStringField(TEXT("component_class"), Template->GetClass()->GetPathName());
+        }
+        else
+        {
+            CObj->SetStringField(TEXT("component_class"), TEXT(""));
+        }
+
+        CObj->SetBoolField(TEXT("is_root"), RootNodes.Contains(Node));
+
+
+
+        Components.Add(MakeShared<FJsonValueObject>(CObj));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+
+    FString ObjectPath;
+    FString PathErr;
+    if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
+
+    ResultObj->SetArrayField(TEXT("components"), Components);
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetComponentProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        // Compat: allow legacy field name
+        Params->TryGetStringField(TEXT("name"), BlueprintName);
+    }
+    if (BlueprintName.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString ComponentName;
+    if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter"));
+    }
+
+    FString PropertyName;
+    if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+    }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
+    if (!Blueprint)
+    {
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    if (!Blueprint->SimpleConstructionScript)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid blueprint construction script"));
+    }
+
+    USCS_Node* ComponentNode = nullptr;
+    for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+    {
+        if (Node && Node->GetVariableName().ToString() == ComponentName)
+        {
+            ComponentNode = Node;
+            break;
+        }
+    }
+
+    if (!ComponentNode || !ComponentNode->ComponentTemplate)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Component not found: %s"), *ComponentName));
+    }
+
+    UObject* Template = ComponentNode->ComponentTemplate;
+    TSharedPtr<FJsonValue> Value;
+    FString Err;
+    FString CppType;
+    FString ExportText;
+
+    if (!FUnrealMCPCommonUtils::GetObjectProperty(Template, PropertyName, Value, Err, &CppType, &ExportText))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("component_name"), ComponentName);
+    ResultObj->SetStringField(TEXT("component_class"), Template->GetClass()->GetPathName());
+    ResultObj->SetStringField(TEXT("property_name"), PropertyName);
+    ResultObj->SetStringField(TEXT("property_cpp_type"), CppType);
+    ResultObj->SetStringField(TEXT("property_export_text"), ExportText);
+    ResultObj->SetField(TEXT("property_value"), Value);
+
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    FString ObjectPath;
+    FString PathErr;
+    if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
+
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleGetBlueprintProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        // Compat: allow legacy field name
+        Params->TryGetStringField(TEXT("name"), BlueprintName);
+    }
+    if (BlueprintName.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString PropertyName;
+    if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+    }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
+    if (!Blueprint)
+    {
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    if (!Blueprint->GeneratedClass)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint has no generated class"));
+    }
+
+    UObject* DefaultObject = Blueprint->GeneratedClass->GetDefaultObject();
+    if (!DefaultObject)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get default object"));
+    }
+
+    TSharedPtr<FJsonValue> Value;
+    FString Err;
+    FString CppType;
+    FString ExportText;
+
+    if (!FUnrealMCPCommonUtils::GetObjectProperty(DefaultObject, PropertyName, Value, Err, &CppType, &ExportText))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Err);
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("property_name"), PropertyName);
+    ResultObj->SetStringField(TEXT("property_cpp_type"), CppType);
+    ResultObj->SetStringField(TEXT("property_export_text"), ExportText);
+    ResultObj->SetField(TEXT("property_value"), Value);
+
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    FString ObjectPath;
+    FString PathErr;
+    if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
+
+    return ResultObj;
+}
+
+ 

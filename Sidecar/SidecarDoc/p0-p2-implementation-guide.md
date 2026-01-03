@@ -37,88 +37,29 @@
 
 ---
 
-## 待实施：P2（进阶，对应"路线 B 完整形态"）
+## P2（进阶，对应"路线 B 完整形态"）
 
-### P2-1: 实现 batch tool（一次性执行多步，事务保护）
+### ✅ P2-1: `unreal.batch`（已实现：UE-batch 优先 + 安全回退）
 
-#### 背景
-AI 常需连续执行多个命令（如"创建 Blueprint → 添加组件 → 编译"）；当前方案每步独立往返 UE，中途失败导致半成品残留。
+#### 目标
+AI 常需连续执行多个命令（如“创建 Blueprint → 添加组件 → 编译”）。`unreal.batch` 用一个 MCP tool 包住多步执行，减少半成品残留与反复试错。
 
-#### 设计
-```csharp
-// 新增 tool: unreal.batch
-[
-  {
-    "name": "unreal.batch",
-    "description": "Execute multiple UE commands as a transactional batch",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "commands": {
-          "type": "array",
-          "description": "Array of command objects: [{ type: '...', params: {...} }]",
-          "items": { "type": "object" }
-        },
-        "atomic": {
-          "type": "boolean",
-          "description": "If true, rollback all on any failure (requires UE plugin support)",
-          "default": false
-        }
-      },
-      "required": ["commands"]
-    }
-  }
-]
-```
+#### Tool 输入（Sidecar）
+- `calls`: `[{ name: string, arguments?: object }]`
+- `stop_on_error`: `boolean`（默认 `true`）
+- `notify`: `boolean`（默认 `false`，开启后会发送 `notifications/message` 进度提示）
+- `use_ue_batch`: `boolean`（默认 `true`，允许优先使用 UE 插件的 `batch` 命令）
 
-#### 实施步骤
-1. **Sidecar 端** (`Program.cs`):
-   ```csharp
-   case "unreal.batch":
-   {
-       var commands = req.Params?["commands"] as JsonArray;
-       var atomic = req.Params?["atomic"]?.GetValue<bool>() ?? false;
-       
-       if (commands is null || commands.Count == 0)
-       {
-           response = Mcp.MakeJsonRpcError(id, -32602, "Missing or empty commands array");
-           break;
-       }
+#### 执行语义
+1. 若 `use_ue_batch=true` 且每个 call 都可映射到 UE 命令：Sidecar 会调用 UE 的 `batch` 命令（参数：`commands` + `stop_on_error`）。
+2. UE-side `batch` 不可用或传输失败：回退到 Sidecar 本地逐条执行（复用单步 tool 执行逻辑）。
+3. 禁止嵌套 `unreal.batch`，避免递归与意外放大调用。
 
-       // 方案 A: Sidecar 本地循环发送（无事务保护，atomic 被忽略）
-       var results = new JsonArray();
-       foreach (var cmd in commands)
-       {
-           var cmdObj = cmd as JsonObject;
-           var type = cmdObj?["type"]?.GetValue<string>();
-           var p = cmdObj?["params"] as JsonObject;
-           
-           using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(UeProxy.TimeoutMs));
-           var ueResp = await UeProxy.SendAsync(type!, p, cts.Token);
-           results.Add(ueResp);
-           
-           if (atomic && ueResp?["success"]?.GetValue<bool>() == false)
-           {
-               // Early exit on failure (UE-side rollback NOT implemented yet)
-               break;
-           }
-       }
-       
-       response = Mcp.MakeJsonRpcResponse(id, new JsonObject { ["results"] = results });
-       break;
-   }
-
-   // 方案 B: 发送到 UE 插件统一执行（需 UE-3 支持）
-   // SendAsync("batch", new JsonObject { ["commands"] = commands, ["atomic"] = atomic }, ct);
-   ```
-
-2. **UE 插件端** (见 **UE-3: batch 命令支持**)
-
-#### 优先级
-- **方案 A（Sidecar 本地循环）**: 低成本，可立即实施，但无事务保护
-- **方案 B（UE 原生 batch）**: 需升级 UE 插件，但支持事务回滚 + 性能更好
+#### 事务 / 回滚说明
+当前实现是“顺序批处理 + stop_on_error”，不承诺 UE 侧事务回滚；真正的回滚语义需要 UE 插件配合（见 UE-3）。
 
 ---
+
 
 ### P2-2: logging capability（进度推送）
 
@@ -374,18 +315,19 @@ FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>
 - [x] P0-1: tool schema 补齐
 - [x] P0-2: prompts 能力
 - [x] P1-1: initialize 检测 UE 连接
+- [x] P2-1: `unreal.batch`（UE-batch 优先 + 安全回退）
 
 ### 阶段 2：稳定性增强（1-2 天）
 - [ ] UE-2: 结构化错误（优先级最高，立即改善 AI 体验）
 - [ ] UE-1: 长度前缀协议（解决大响应问题）
-- [ ] 发布 Sidecar v0.2.0 + 更新文档
+- [x] 发布 Sidecar v0.3.0 + 更新文档
 
 ### 阶段 3：高级能力（1 周）
-- [ ] P2-1: batch tool（Sidecar 本地循环版本）
 - [ ] P2-3: resources 能力（需先实现 UE `get_editor_context`）
 - [ ] UE-3: batch 命令原生支持（事务保护）
 
 ### 阶段 4：完整形态（按需）
+
 - [ ] P2-2: logging capability（需协议重构为双向流）
 - [ ] 性能优化：长连接复用（当前每次 SendAsync 新建 TCP）
 - [ ] 错误恢复：UE 崩溃后自动重连
@@ -394,53 +336,21 @@ FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>
 
 ## 验证清单
 
-### P0/P1 验证（当前版本）
-```bash
-# 1. 编译并发布
-cd f:\MyLife_Project\UGIT\UEMCP
-Sidecar\publish_sidecar.bat
-
-# 2. 冒烟测试：tools/list 应返回 45+ 工具且包含详细 schema
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | Sidecar\publish\win-x64\UnrealMCP.Sidecar.exe | jq '.result.tools[0]'
-
-# 预期：包含 inputSchema.properties 和 inputSchema.required
-
-# 3. prompts/list 应返回 unreal.usage_guide
-echo '{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}' | Sidecar\publish\win-x64\UnrealMCP.Sidecar.exe
-
-# 4. initialize 应返回 UE 连接状态（需先启动 UE + UnrealMCP 插件）
-echo '{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' | Sidecar\publish\win-x64\UnrealMCP.Sidecar.exe | jq '._meta.unrealConnection'
-
-# 预期：{"status":"connected","host":"127.0.0.1","port":55557}
-```
-
-### P2 验证（阶段 3 后）
-```bash
-# batch tool 测试
-echo '{
-  "jsonrpc":"2.0","id":4,"method":"tools/call",
-  "params":{
-    "name":"unreal.batch",
-    "arguments":{
-      "commands":[
-        {"type":"create_blueprint","params":{"name":"TestBP","parent_class":"Actor"}},
-        {"type":"compile_blueprint","params":{"blueprint_name":"TestBP"}}
-      ]
-    }
-  }
-}' | UnrealMCP.Sidecar.exe
-```
+使用/冒烟测试请以 `Sidecar/SidecarDoc/README.md` 为准（包含 Windows PowerShell 的 Content-Length 分帧示例、`--version`、`--health`、以及基础 MCP 方法调用）。
 
 ---
+
 
 ## 总结
 
 - **P0 完成**：AI 调用成功率从 50% → 90%+，主动学习能力提升
 - **P1 完成**：初始化时检测 UE 状态，避免盲试
-- **P2 待实施**：batch/logging/resources 需权衡成本收益
+- **P2 进行中**：已落地 `unreal.batch`；`logging/resources` 仍需权衡成本收益
 - **UE 插件升级**：结构化错误（UE-2）优先级最高，长度前缀（UE-1）次之
 
+
 **推荐行动**：
-1. 立即发布当前 P0/P1 版本（已可用）
+1. 发布/分发当前 Sidecar（含 `unreal.batch`、`--health`、JSON 日志等增强）
 2. 优先实施 **UE-2 结构化错误**（1-2 天工作量，高价值）
-3. 根据用户反馈决定是否实施 P2（batch 需求高 → 实施 P2-1 + UE-3）
+3. 若需要“强事务语义/更少往返”：再推进 UE-3（UE 原生 batch + 回滚语义）与 UE-1（长度前缀协议）
+

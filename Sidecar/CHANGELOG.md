@@ -1,5 +1,24 @@
 # UnrealMCP.Sidecar Changelog
 
+## [0.3.0] - 2026-01-03
+
+### Added
+- `--version` / `-v`: print Sidecar version and exit
+- `--health`: UE connectivity probe (prints `healthy/unhealthy`, sets exit code)
+- Graceful shutdown for Ctrl+C / SIGTERM
+- Optional JSON structured logging (set `UNREAL_MCP_LOG_JSON=1`)
+- Raw JSON fallback read timeout protection (prevents infinite accumulation on legacy UE replies)
+- Unit test project (`UnrealMCP.Sidecar.Tests`) for core MCP helpers
+
+### Changed
+- Version is now read from assembly metadata (single source of truth in `.csproj`)
+- `initialize.serverInfo.version` now reports runtime version (no hardcoded string)
+
+### Fixed
+- Reduced risk of hangs when UE responds with unframed raw JSON
+
+---
+
 ## [0.2.0] - 2025-01-02
 
 ### Added (P0: 必须补，否则 AI 易大量误用)
@@ -46,10 +65,9 @@
 
 ## [Unreleased] - P2/UE Plugin Roadmap
 
-See `Docs/p0-p2-implementation-guide.md` for detailed implementation plan:
+See `Sidecar/SidecarDoc/p0-p2-implementation-guide.md` for detailed implementation plan.
 
 ### P2 (Advanced capabilities)
-- **P2-1**: `unreal.batch` tool for transactional multi-command execution
 - **P2-2**: `logging` capability for progress streaming (requires protocol redesign)
 - **P2-3**: `resources` capability to expose UE editor context (opened blueprints, selected actors)
 
@@ -58,8 +76,3 @@ See `Docs/p0-p2-implementation-guide.md` for detailed implementation plan:
 - **UE-2**: Structured error responses (error codes, details, suggestions, progressHint)
 - **UE-3**: Native `batch` command support with transaction rollback
 
-### Priority Recommendations
-1. **Immediate**: Release v0.2.0 with P0/P1 enhancements (done)
-2. **High Priority**: UE-2 Structured errors (1-2 days, high AI UX value)
-3. **Medium Priority**: UE-1 Length-prefixed protocol (stability improvement)
-4. **On-Demand**: P2-1/P2-3/UE-3 based on user feedback

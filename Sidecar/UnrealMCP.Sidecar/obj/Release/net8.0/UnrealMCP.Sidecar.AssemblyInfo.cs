@@ -12,11 +12,12 @@ using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("UnrealMCP.Sidecar")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3c308ae43df8c8d570b3590f6b713fc1fd69bddf")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("0.3.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.3.0+2eddc238d5ec688435314f066e8fd88576ce3474")]
 [assembly: System.Reflection.AssemblyProductAttribute("UnrealMCP.Sidecar")]
 [assembly: System.Reflection.AssemblyTitleAttribute("UnrealMCP.Sidecar")]
-[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersionAttribute("0.3.0.0")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("UnrealMCP.Sidecar.Tests")]
 
 // 由 MSBuild WriteCodeFragment 类生成。
 

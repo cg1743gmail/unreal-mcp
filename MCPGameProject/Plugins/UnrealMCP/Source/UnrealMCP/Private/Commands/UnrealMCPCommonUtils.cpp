@@ -17,7 +17,10 @@
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/UnrealType.h"
 #include "Engine/Selection.h"
+
 #include "EditorAssetLibrary.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -25,6 +28,13 @@
 #include "BlueprintActionDatabase.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/PackageName.h"
+#include "WidgetBlueprint.h"
+#include "Algo/Unique.h"
+#include "Modules/ModuleManager.h"
+
+
 
 // JSON Utilities
 TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::CreateErrorResponse(const FString& Message)
@@ -169,17 +179,431 @@ FRotator FUnrealMCPCommonUtils::GetRotatorFromJson(const TSharedPtr<FJsonObject>
     return Result;
 }
 
+// -------------------------
+// Asset path utilities
+// -------------------------
+
+namespace UnrealMcpAssetPath
+{
+	static const TCHAR* Section = TEXT("UnrealMCP");
+
+	static FString GetConfigString(const TCHAR* Key, const FString& DefaultValue)
+	{
+		FString Value;
+		if (GConfig && GConfig->GetString(Section, Key, Value, GEngineIni) && !Value.IsEmpty())
+		{
+			return Value;
+		}
+		return DefaultValue;
+	}
+
+	static bool GetConfigBool(const TCHAR* Key, bool DefaultValue)
+	{
+		bool bValue = DefaultValue;
+		if (GConfig)
+		{
+			GConfig->GetBool(Section, Key, bValue, GEngineIni);
+		}
+		return bValue;
+	}
+
+	static void NormalizeRoot(FString& Root)
+	{
+		Root.TrimStartAndEndInline();
+		if (!Root.EndsWith(TEXT("/")))
+		{
+			Root += TEXT("/");
+		}
+	}
+
+	static void SplitCsv(const FString& Csv, TArray<FString>& Out)
+	{
+		TArray<FString> Parts;
+		Csv.ParseIntoArray(Parts, TEXT(","), true);
+		for (FString& P : Parts)
+		{
+			P.TrimStartAndEndInline();
+			if (!P.IsEmpty())
+			{
+				Out.Add(P);
+			}
+		}
+	}
+}
+
+FString FUnrealMCPCommonUtils::GetDefaultBlueprintFolder()
+{
+	// Safe default: keep UnrealMCP-generated assets under a dedicated root.
+	FString Folder = UnrealMcpAssetPath::GetConfigString(TEXT("DefaultBlueprintFolder"), TEXT("/Game/UnrealMCP/Blueprints/"));
+	FString Err;
+	FString Normalized;
+	if (NormalizeLongPackageFolder(Folder, Normalized, Err))
+	{
+		return Normalized;
+	}
+	return TEXT("/Game/UnrealMCP/Blueprints/");
+}
+
+FString FUnrealMCPCommonUtils::GetDefaultWidgetFolder()
+{
+	FString Folder = UnrealMcpAssetPath::GetConfigString(TEXT("DefaultWidgetFolder"), TEXT("/Game/UnrealMCP/Widgets/"));
+	FString Err;
+	FString Normalized;
+	if (NormalizeLongPackageFolder(Folder, Normalized, Err))
+	{
+		return Normalized;
+	}
+	return TEXT("/Game/UnrealMCP/Widgets/");
+}
+
+void FUnrealMCPCommonUtils::GetAllowedWriteRoots(TArray<FString>& OutRoots)
+{
+	OutRoots.Reset();
+
+	FString Csv = UnrealMcpAssetPath::GetConfigString(TEXT("AllowedWriteRoots"), TEXT("/Game/UnrealMCP/"));
+	UnrealMcpAssetPath::SplitCsv(Csv, OutRoots);
+	if (OutRoots.Num() == 0)
+	{
+		OutRoots.Add(TEXT("/Game/UnrealMCP/"));
+	}
+
+	for (FString& Root : OutRoots)
+	{
+		UnrealMcpAssetPath::NormalizeRoot(Root);
+	}
+}
+
+bool FUnrealMCPCommonUtils::IsWritePathAllowed(const FString& LongPackageOrAssetPath, FString& OutError)
+{
+	OutError.Reset();
+
+	const bool bStrict = UnrealMcpAssetPath::GetConfigBool(TEXT("bStrictWriteAllowlist"), true);
+	if (!bStrict)
+	{
+		return true;
+	}
+
+	FString NormalizedAssetPath;
+	FString Err;
+	if (!NormalizeLongPackageAssetPath(LongPackageOrAssetPath, NormalizedAssetPath, Err))
+	{
+		OutError = Err;
+		return false;
+	}
+
+	// Disallow writes to engine content.
+	if (NormalizedAssetPath.StartsWith(TEXT("/Engine/")))
+	{
+		OutError = TEXT("Write operations to /Engine are not allowed");
+		return false;
+	}
+
+	TArray<FString> Roots;
+	GetAllowedWriteRoots(Roots);
+	for (const FString& Root : Roots)
+	{
+		if (NormalizedAssetPath.StartsWith(Root))
+		{
+			return true;
+		}
+	}
+
+	OutError = FString::Printf(TEXT("Write path '%s' is not allowed. Configure [UnrealMCP] AllowedWriteRoots to include the desired /Game/... root."), *NormalizedAssetPath);
+	return false;
+}
+
+bool FUnrealMCPCommonUtils::NormalizeLongPackageFolder(const FString& InFolder, FString& OutFolder, FString& OutError)
+{
+	OutError.Reset();
+	OutFolder = InFolder;
+	OutFolder.TrimStartAndEndInline();
+
+	if (OutFolder.IsEmpty())
+	{
+		OutError = TEXT("Folder path is empty");
+		return false;
+	}
+
+	if (!OutFolder.StartsWith(TEXT("/Game/")))
+	{
+		OutError = FString::Printf(TEXT("Folder must start with /Game/. Got: %s"), *OutFolder);
+		return false;
+	}
+
+	if (!OutFolder.EndsWith(TEXT("/")))
+	{
+		OutFolder += TEXT("/");
+	}
+
+	// Folder paths should be valid long package names without an object suffix.
+	FString AsPackage = OutFolder.LeftChop(1);
+	if (!FPackageName::IsValidLongPackageName(AsPackage))
+	{
+		OutError = FString::Printf(TEXT("Invalid long package folder: %s"), *OutFolder);
+		return false;
+	}
+
+	return true;
+}
+
+bool FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(const FString& InAssetPath, FString& OutAssetPath, FString& OutError)
+{
+	OutError.Reset();
+	OutAssetPath = InAssetPath;
+	OutAssetPath.TrimStartAndEndInline();
+
+	if (OutAssetPath.IsEmpty())
+	{
+		OutError = TEXT("Asset path is empty");
+		return false;
+	}
+
+	// Accept object path (contains '.') and normalize to long package asset path.
+	if (OutAssetPath.Contains(TEXT(".")))
+	{
+		FSoftObjectPath SoftPath(OutAssetPath);
+		const FString LongPackageName = SoftPath.GetLongPackageName();
+		const FString AssetName = SoftPath.GetAssetName();
+		if (LongPackageName.IsEmpty() || AssetName.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Invalid object path: %s"), *OutAssetPath);
+			return false;
+		}
+		OutAssetPath = FString::Printf(TEXT("%s/%s"), *LongPackageName, *AssetName);
+	}
+
+	if (!OutAssetPath.StartsWith(TEXT("/Game/")) && !OutAssetPath.StartsWith(TEXT("/Engine/")))
+	{
+		OutError = FString::Printf(TEXT("Asset path must start with /Game/ (or /Engine/ for read-only). Got: %s"), *OutAssetPath);
+		return false;
+	}
+
+	if (!FPackageName::IsValidLongPackageName(OutAssetPath))
+	{
+		OutError = FString::Printf(TEXT("Invalid long package asset path: %s"), *OutAssetPath);
+		return false;
+	}
+
+	return true;
+}
+
+bool FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(const FString& LongPackageAssetPath, FString& OutObjectPath, FString& OutError)
+{
+	OutError.Reset();
+	FString NormalizedAssetPath;
+	if (!NormalizeLongPackageAssetPath(LongPackageAssetPath, NormalizedAssetPath, OutError))
+	{
+		return false;
+	}
+
+	const FString AssetName = FPackageName::GetShortName(NormalizedAssetPath);
+	OutObjectPath = FString::Printf(TEXT("%s.%s"), *NormalizedAssetPath, *AssetName);
+	return true;
+}
+
+void FUnrealMCPCommonUtils::AddResolvedAssetFields(const TSharedPtr<FJsonObject>& Obj, const FString& AnyAssetOrObjectPath)
+{
+	if (!Obj.IsValid())
+	{
+		return;
+	}
+
+	FString NormalizedAssetPath;
+	FString Err;
+	if (!NormalizeLongPackageAssetPath(AnyAssetOrObjectPath, NormalizedAssetPath, Err))
+	{
+		return;
+	}
+
+	Obj->SetStringField(TEXT("resolved_asset_path"), NormalizedAssetPath);
+
+	FString ObjectPath;
+	if (MakeObjectPathFromAssetPath(NormalizedAssetPath, ObjectPath, Err))
+	{
+		Obj->SetStringField(TEXT("object_path"), ObjectPath);
+	}
+}
+
+void FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(const TSharedPtr<FJsonObject>& Obj, const UObject* Asset)
+{
+	if (!Obj.IsValid() || !Asset)
+	{
+		return;
+	}
+
+	// Outermost package name is a long package name: /Game/.../AssetName
+	const FString PackageName = Asset->GetOutermost() ? Asset->GetOutermost()->GetName() : FString();
+	if (!PackageName.IsEmpty())
+	{
+		AddResolvedAssetFields(Obj, PackageName);
+	}
+}
+
+UObject* FUnrealMCPCommonUtils::LoadAssetByPathSmart(const FString& InPath)
+{
+	FString NormalizedAssetPath;
+	FString Err;
+	if (!NormalizeLongPackageAssetPath(InPath, NormalizedAssetPath, Err))
+	{
+		return nullptr;
+	}
+
+	FString ObjectPath;
+	if (!MakeObjectPathFromAssetPath(NormalizedAssetPath, ObjectPath, Err))
+	{
+		return nullptr;
+	}
+
+	return UEditorAssetLibrary::LoadAsset(ObjectPath);
+}
+
+UBlueprint* FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(const FString& BlueprintName, const FString& BlueprintPath, FString& OutResolvedAssetPath, TArray<FString>& OutCandidates)
+{
+	OutResolvedAssetPath.Reset();
+	OutCandidates.Reset();
+
+	// Path wins (recommended).
+	if (!BlueprintPath.IsEmpty())
+	{
+		FString Normalized;
+		FString Err;
+		if (!NormalizeLongPackageAssetPath(BlueprintPath, Normalized, Err))
+		{
+			OutCandidates.Add(FString::Printf(TEXT("Invalid blueprint_path: %s"), *Err));
+			return nullptr;
+		}
+
+		UObject* Asset = LoadAssetByPathSmart(Normalized);
+		UBlueprint* BP = Cast<UBlueprint>(Asset);
+		if (!BP)
+		{
+			OutCandidates.Add(TEXT("Path did not resolve to a UBlueprint"));
+			return nullptr;
+		}
+		OutResolvedAssetPath = Normalized;
+		return BP;
+	}
+
+	if (BlueprintName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	// Name-only fallback: search AssetRegistry for exact name matches.
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssetsByClass(UBlueprint::StaticClass()->GetClassPathName(), Assets, true);
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		if (AssetData.AssetName.ToString().Equals(BlueprintName, ESearchCase::CaseSensitive))
+		{
+			const FString Candidate = AssetData.PackageName.ToString();
+			// PackageName is like /Game/Foo/BP_Test (without object suffix)
+			OutCandidates.Add(Candidate);
+		}
+	}
+
+	// Remove duplicates + stabilize order.
+	OutCandidates.Sort();
+	OutCandidates.SetNum(Algo::Unique(OutCandidates));
+
+	if (OutCandidates.Num() != 1)
+	{
+		return nullptr;
+	}
+
+	OutResolvedAssetPath = OutCandidates[0];
+	const FString ObjPath = FString::Printf(TEXT("%s.%s"), *OutResolvedAssetPath, *FPackageName::GetShortName(OutResolvedAssetPath));
+	return Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(ObjPath));
+}
+
+
+UWidgetBlueprint* FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(const FString& BlueprintName, const FString& BlueprintPath, FString& OutResolvedAssetPath, TArray<FString>& OutCandidates)
+{
+	OutResolvedAssetPath.Reset();
+	OutCandidates.Reset();
+
+	if (!BlueprintPath.IsEmpty())
+	{
+		FString Normalized;
+		FString Err;
+		if (!NormalizeLongPackageAssetPath(BlueprintPath, Normalized, Err))
+		{
+			OutCandidates.Add(FString::Printf(TEXT("Invalid blueprint_path: %s"), *Err));
+			return nullptr;
+		}
+
+		UObject* Asset = LoadAssetByPathSmart(Normalized);
+		UWidgetBlueprint* BP = Cast<UWidgetBlueprint>(Asset);
+		if (!BP)
+		{
+			OutCandidates.Add(TEXT("Path did not resolve to a UWidgetBlueprint"));
+			return nullptr;
+		}
+		OutResolvedAssetPath = Normalized;
+		return BP;
+	}
+
+	if (BlueprintName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssetsByClass(UWidgetBlueprint::StaticClass()->GetClassPathName(), Assets, true);
+
+	for (const FAssetData& AssetData : Assets)
+	{
+		if (AssetData.AssetName.ToString().Equals(BlueprintName, ESearchCase::CaseSensitive))
+		{
+			OutCandidates.Add(AssetData.PackageName.ToString());
+		}
+	}
+
+	OutCandidates.Sort();
+	OutCandidates.SetNum(Algo::Unique(OutCandidates));
+
+	if (OutCandidates.Num() != 1)
+	{
+		return nullptr;
+	}
+
+	OutResolvedAssetPath = OutCandidates[0];
+	const FString ObjPath = FString::Printf(TEXT("%s.%s"), *OutResolvedAssetPath, *FPackageName::GetShortName(OutResolvedAssetPath));
+	return Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(ObjPath));
+}
+
+// -------------------------
 // Blueprint Utilities
+// -------------------------
+
 UBlueprint* FUnrealMCPCommonUtils::FindBlueprint(const FString& BlueprintName)
 {
-    return FindBlueprintByName(BlueprintName);
+	FString Resolved;
+	TArray<FString> Candidates;
+
+	// If caller passed a path, treat it as blueprint_path.
+	if (BlueprintName.StartsWith(TEXT("/")))
+	{
+		return ResolveBlueprintFromNameOrPath(TEXT(""), BlueprintName, Resolved, Candidates);
+	}
+
+	// Otherwise treat it as a short name.
+	return ResolveBlueprintFromNameOrPath(BlueprintName, TEXT(""), Resolved, Candidates);
 }
+
 
 UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintName)
 {
-    FString AssetPath = TEXT("/Game/Blueprints/") + BlueprintName;
-    return LoadObject<UBlueprint>(nullptr, *AssetPath);
+	return FindBlueprint(BlueprintName);
 }
+
 
 UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)
 {
@@ -727,7 +1151,346 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
         }
     }
     
-    OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"), 
+    OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"),
                                     *Property->GetClass()->GetName(), *PropertyName);
     return false;
-} 
+}
+
+static TSharedPtr<FJsonValue> UnrealMcpPropertyValueToJson(FProperty* Property, void* PropertyAddr, FString& OutErrorMessage, bool& bOutSupported)
+{
+    bOutSupported = true;
+
+    if (!Property)
+    {
+        bOutSupported = false;
+        OutErrorMessage = TEXT("Invalid property");
+        return MakeShared<FJsonValueNull>();
+    }
+
+    if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+    {
+        return MakeShared<FJsonValueBoolean>(BoolProp->GetPropertyValue(PropertyAddr));
+    }
+
+    if (FNumericProperty* NumProp = CastField<FNumericProperty>(Property))
+    {
+        if (NumProp->IsInteger())
+        {
+            const int64 V = NumProp->GetSignedIntPropertyValue(PropertyAddr);
+            return MakeShared<FJsonValueNumber>((double)V);
+        }
+        if (NumProp->IsFloatingPoint())
+        {
+            const double V = NumProp->GetFloatingPointPropertyValue(PropertyAddr);
+            return MakeShared<FJsonValueNumber>(V);
+        }
+    }
+
+    if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+    {
+        return MakeShared<FJsonValueString>(StrProp->GetPropertyValue(PropertyAddr));
+    }
+
+    if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+    {
+        return MakeShared<FJsonValueString>(NameProp->GetPropertyValue(PropertyAddr).ToString());
+    }
+
+    if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
+    {
+        return MakeShared<FJsonValueString>(TextProp->GetPropertyValue(PropertyAddr).ToString());
+    }
+
+    if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+    {
+        UEnum* EnumDef = ByteProp->GetIntPropertyEnum();
+        const uint8 V = ByteProp->GetPropertyValue(PropertyAddr);
+
+        if (EnumDef)
+        {
+            const FString Name = EnumDef->GetNameStringByValue((int64)V);
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("name"), Name);
+            Obj->SetNumberField(TEXT("value"), (double)V);
+            Obj->SetStringField(TEXT("enum"), EnumDef->GetName());
+            return MakeShared<FJsonValueObject>(Obj);
+        }
+
+        return MakeShared<FJsonValueNumber>((double)V);
+    }
+
+    if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
+    {
+        UEnum* EnumDef = EnumProp->GetEnum();
+        FNumericProperty* Underlying = EnumProp->GetUnderlyingProperty();
+        if (EnumDef && Underlying)
+        {
+            const int64 V = Underlying->GetSignedIntPropertyValue(PropertyAddr);
+            const FString Name = EnumDef->GetNameStringByValue(V);
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("name"), Name);
+            Obj->SetNumberField(TEXT("value"), (double)V);
+            Obj->SetStringField(TEXT("enum"), EnumDef->GetName());
+            return MakeShared<FJsonValueObject>(Obj);
+        }
+    }
+
+    if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
+    {
+        if (StructProp->Struct == TBaseStructure<FVector>::Get())
+        {
+            const FVector* V = (const FVector*)PropertyAddr;
+            TArray<TSharedPtr<FJsonValue>> Arr;
+            Arr.Add(MakeShared<FJsonValueNumber>(V->X));
+            Arr.Add(MakeShared<FJsonValueNumber>(V->Y));
+            Arr.Add(MakeShared<FJsonValueNumber>(V->Z));
+            return MakeShared<FJsonValueArray>(Arr);
+        }
+        if (StructProp->Struct == TBaseStructure<FRotator>::Get())
+        {
+            const FRotator* R = (const FRotator*)PropertyAddr;
+            TArray<TSharedPtr<FJsonValue>> Arr;
+            Arr.Add(MakeShared<FJsonValueNumber>(R->Pitch));
+            Arr.Add(MakeShared<FJsonValueNumber>(R->Yaw));
+            Arr.Add(MakeShared<FJsonValueNumber>(R->Roll));
+            return MakeShared<FJsonValueArray>(Arr);
+        }
+        if (StructProp->Struct == TBaseStructure<FVector2D>::Get())
+        {
+            const FVector2D* V = (const FVector2D*)PropertyAddr;
+            TArray<TSharedPtr<FJsonValue>> Arr;
+            Arr.Add(MakeShared<FJsonValueNumber>(V->X));
+            Arr.Add(MakeShared<FJsonValueNumber>(V->Y));
+            return MakeShared<FJsonValueArray>(Arr);
+        }
+        if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
+        {
+            const FLinearColor* C = (const FLinearColor*)PropertyAddr;
+            TArray<TSharedPtr<FJsonValue>> Arr;
+            Arr.Add(MakeShared<FJsonValueNumber>(C->R));
+            Arr.Add(MakeShared<FJsonValueNumber>(C->G));
+            Arr.Add(MakeShared<FJsonValueNumber>(C->B));
+            Arr.Add(MakeShared<FJsonValueNumber>(C->A));
+            return MakeShared<FJsonValueArray>(Arr);
+        }
+        if (StructProp->Struct == TBaseStructure<FTransform>::Get())
+        {
+            const FTransform* T = (const FTransform*)PropertyAddr;
+            const FVector L = T->GetLocation();
+            const FRotator Rot = T->GetRotation().Rotator();
+            const FVector S = T->GetScale3D();
+
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+
+            TArray<TSharedPtr<FJsonValue>> Loc;
+            Loc.Add(MakeShared<FJsonValueNumber>(L.X));
+            Loc.Add(MakeShared<FJsonValueNumber>(L.Y));
+            Loc.Add(MakeShared<FJsonValueNumber>(L.Z));
+            Obj->SetArrayField(TEXT("location"), Loc);
+
+            TArray<TSharedPtr<FJsonValue>> RotArr;
+            RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+            RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+            RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+            Obj->SetArrayField(TEXT("rotation"), RotArr);
+
+            TArray<TSharedPtr<FJsonValue>> Scale;
+            Scale.Add(MakeShared<FJsonValueNumber>(S.X));
+            Scale.Add(MakeShared<FJsonValueNumber>(S.Y));
+            Scale.Add(MakeShared<FJsonValueNumber>(S.Z));
+            Obj->SetArrayField(TEXT("scale"), Scale);
+
+            return MakeShared<FJsonValueObject>(Obj);
+
+        }
+
+        // Fallback: export as text
+        bOutSupported = false;
+    }
+
+    if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
+    {
+        UObject* Obj = ObjProp->GetObjectPropertyValue(PropertyAddr);
+        if (!Obj)
+        {
+            return MakeShared<FJsonValueNull>();
+        }
+        return MakeShared<FJsonValueString>(Obj->GetPathName());
+    }
+
+    if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+    {
+        const FSoftObjectPtr* Ptr = (const FSoftObjectPtr*)PropertyAddr;
+        return MakeShared<FJsonValueString>(Ptr->ToSoftObjectPath().ToString());
+    }
+
+    if (FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Property))
+    {
+        const FSoftObjectPtr* Ptr = (const FSoftObjectPtr*)PropertyAddr;
+        return MakeShared<FJsonValueString>(Ptr->ToSoftObjectPath().ToString());
+    }
+
+    if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
+    {
+        FScriptArrayHelper Helper(ArrayProp, PropertyAddr);
+        TArray<TSharedPtr<FJsonValue>> Out;
+        Out.Reserve(Helper.Num());
+        for (int32 i = 0; i < Helper.Num(); i++)
+        {
+            void* ElemAddr = Helper.GetRawPtr(i);
+            bool bElemSupported = true;
+            FString ElemErr;
+            Out.Add(UnrealMcpPropertyValueToJson(ArrayProp->Inner, ElemAddr, ElemErr, bElemSupported));
+            if (!bElemSupported)
+            {
+                // keep going; we'll provide export_text at the top-level
+                bOutSupported = false;
+            }
+        }
+        return MakeShared<FJsonValueArray>(Out);
+    }
+
+    // Last resort: export text (stable for most properties)
+    bOutSupported = false;
+    return MakeShared<FJsonValueNull>();
+}
+
+bool FUnrealMCPCommonUtils::GetObjectProperty(UObject* Object, const FString& PropertyName,
+    TSharedPtr<FJsonValue>& OutValue,
+    FString& OutErrorMessage,
+    FString* OutCppType,
+    FString* OutExportText)
+{
+    OutValue = MakeShared<FJsonValueNull>();
+    OutErrorMessage.Empty();
+
+    if (!Object)
+    {
+        OutErrorMessage = TEXT("Invalid object");
+        return false;
+    }
+
+    FProperty* Property = Object->GetClass()->FindPropertyByName(*PropertyName);
+    if (!Property)
+    {
+        OutErrorMessage = FString::Printf(TEXT("Property not found: %s"), *PropertyName);
+        return false;
+    }
+
+    if (OutCppType)
+        *OutCppType = Property->GetCPPType();
+
+    void* PropertyAddr = Property->ContainerPtrToValuePtr<void>(Object);
+
+    FString ExportText;
+    Property->ExportTextItem(ExportText, PropertyAddr, nullptr, Object, PPF_None);
+    if (OutExportText)
+        *OutExportText = ExportText;
+
+    bool bSupported = true;
+    FString ConvErr;
+    TSharedPtr<FJsonValue> Value = UnrealMcpPropertyValueToJson(Property, PropertyAddr, ConvErr, bSupported);
+
+    if (bSupported)
+    {
+        OutValue = Value;
+        return true;
+    }
+
+    // Fallback: always return something readable
+    TSharedPtr<FJsonObject> Fallback = MakeShared<FJsonObject>();
+    Fallback->SetStringField(TEXT("format"), TEXT("export_text"));
+    Fallback->SetStringField(TEXT("export_text"), ExportText);
+    Fallback->SetStringField(TEXT("cpp_type"), Property->GetCPPType());
+    OutValue = MakeShared<FJsonValueObject>(Fallback);
+    return true;
+}
+
+bool FUnrealMCPCommonUtils::ExportObjectProperties(UObject* Object,
+    const TArray<FString>& PropertyNames,
+    TSharedPtr<FJsonObject>& OutProps,
+    FString& OutErrorMessage,
+    bool bOnlyEditable)
+{
+    OutProps = MakeShared<FJsonObject>();
+    OutErrorMessage.Empty();
+
+    if (!Object)
+    {
+        OutErrorMessage = TEXT("Invalid object");
+        return false;
+    }
+
+    auto ShouldExport = [&](FProperty* Prop) -> bool
+    {
+        if (!Prop)
+            return false;
+
+        // Avoid noisy/unsafe fields
+        if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+            return false;
+
+        if (bOnlyEditable && !Prop->HasAnyPropertyFlags(CPF_Edit))
+            return false;
+
+        return true;
+    };
+
+    if (PropertyNames.Num() > 0)
+    {
+        for (const FString& Name : PropertyNames)
+        {
+            if (Name.IsEmpty())
+                continue;
+
+            FProperty* Prop = Object->GetClass()->FindPropertyByName(*Name);
+            if (!Prop)
+            {
+                // Keep going; report missing as export_text error object
+                TSharedPtr<FJsonObject> Missing = MakeShared<FJsonObject>();
+                Missing->SetStringField(TEXT("error"), TEXT("Property not found"));
+                OutProps->SetObjectField(Name, Missing);
+                continue;
+            }
+
+            if (!ShouldExport(Prop))
+                continue;
+
+            TSharedPtr<FJsonValue> V;
+            FString Err;
+            FString CppType;
+            FString ExportText;
+            if (GetObjectProperty(Object, Name, V, Err, &CppType, &ExportText))
+            {
+                OutProps->SetField(Name, V);
+            }
+            else
+            {
+                TSharedPtr<FJsonObject> Fail = MakeShared<FJsonObject>();
+                Fail->SetStringField(TEXT("error"), Err);
+                OutProps->SetObjectField(Name, Fail);
+            }
+        }
+
+        return true;
+    }
+
+    // Export all
+    for (TFieldIterator<FProperty> It(Object->GetClass()); It; ++It)
+    {
+        FProperty* Prop = *It;
+        if (!ShouldExport(Prop))
+            continue;
+
+        const FString Name = Prop->GetName();
+        TSharedPtr<FJsonValue> V;
+        FString Err;
+        if (GetObjectProperty(Object, Name, V, Err, nullptr, nullptr))
+        {
+            OutProps->SetField(Name, V);
+        }
+    }
+
+    return true;
+}
+

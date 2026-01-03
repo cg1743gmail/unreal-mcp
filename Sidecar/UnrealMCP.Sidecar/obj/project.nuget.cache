@@ -1,8 +1,10 @@
 {
   "version": 2,
-  "dgSpecHash": "wy1vRKoj78g=",
+  "dgSpecHash": "XAAYB2p79D4=",
   "success": true,
   "projectFilePath": "f:\\MyLife_Project\\UGIT\\UEMCP\\Sidecar\\UnrealMCP.Sidecar\\UnrealMCP.Sidecar.csproj",
-  "expectedPackageFiles": [],
+  "expectedPackageFiles": [
+    "C:\\Users\\maoshiba\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.16\\microsoft.net.illink.tasks.8.0.16.nupkg.sha512"
+  ],
   "logs": []
 }

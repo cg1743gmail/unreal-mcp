@@ -1,2 +1,5 @@
-f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.pdb
 f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.exe
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.dll
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.deps.json
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.runtimeconfig.json
+f:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.pdb

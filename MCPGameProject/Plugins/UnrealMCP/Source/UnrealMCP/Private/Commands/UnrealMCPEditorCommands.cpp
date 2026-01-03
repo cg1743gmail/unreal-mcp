@@ -417,19 +417,27 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint name is empty"));
     }
 
-    FString Root      = TEXT("/Game/Blueprints/");
-    FString AssetPath = Root + BlueprintName;
+    // Prefer blueprint_path; allow name-only if unique
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
 
-    if (!FPackageName::DoesPackageExist(AssetPath))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found – it must reside under /Game/Blueprints"), *BlueprintName));
-    }
-
-    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(FString::Printf(TEXT("Blueprint not found or ambiguous: %s"), *BlueprintName), TEXT("ERR_ASSET_NOT_FOUND"), Details);
     }
+
 
     // Get transform parameters
     FVector Location(0.0f, 0.0f, 0.0f);
@@ -467,8 +475,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
-        return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+        TSharedPtr<FJsonObject> ResultObj = FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+        FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, ResolvedPath);
+        return ResultObj;
     }
+
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to spawn blueprint actor"));
 }

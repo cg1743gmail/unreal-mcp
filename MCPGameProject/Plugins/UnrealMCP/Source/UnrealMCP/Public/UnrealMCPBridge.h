@@ -50,7 +50,11 @@ private:
 	bool bIsRunning;
 	TSharedPtr<FSocket> ListenerSocket;
 	TSharedPtr<FSocket> ConnectionSocket;
+
+	// Thread + runnable lifecycle (avoid leaks; support graceful stop)
 	FRunnableThread* ServerThread;
+	FMCPServerRunnable* ServerRunnable;
+
 
 	// Server configuration
 	FIPv4Address ServerAddress;

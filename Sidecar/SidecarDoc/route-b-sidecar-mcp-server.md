@@ -1,8 +1,10 @@
 ### 路线 B 研究文档：UE 侧原生 MCP Server 的可落地形态（B1/B2）
 
-> 本文档用于把“路线 B（UE 插件直接实现 MCP Server）”落成可实施的工程方案，并给出模块拆分与接口定义。
+> 本文档用于把“路线 B（UE 插件直接实现 MCP Server）”落成可实施的工程方案，并给出模块拆分与接口定义。  
+> **现状**：仓库已落地 B1（Sidecar EXE stdio MCP + UE 插件执行端），使用说明见 `Sidecar/SidecarDoc/README.md`；本文档作为架构研究与后续演进参考。
 
 ---
+
 
 ## 1. 背景与约束
 

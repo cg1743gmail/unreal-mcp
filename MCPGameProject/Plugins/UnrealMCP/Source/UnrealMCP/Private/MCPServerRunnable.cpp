@@ -169,8 +169,19 @@ void FMCPServerRunnable::HandleClientConnection(TSharedPtr<FSocket> InClientSock
             }
         }
 
+        // Propagate MCP meta (request_id / trace_id / token, etc.) into params for downstream handlers.
+        if (JsonObject->HasField(TEXT("_mcp")))
+        {
+            const TSharedPtr<FJsonObject> McpObj = JsonObject->GetObjectField(TEXT("_mcp"));
+            if (McpObj.IsValid())
+            {
+                ParamsObj->SetObjectField(TEXT("_mcp"), McpObj);
+            }
+        }
+
         // Execute
         FString Response = Bridge->ExecuteCommand(CommandType, ParamsObj);
+
 
         // Determine response framing
         bool bLen32Le = false;

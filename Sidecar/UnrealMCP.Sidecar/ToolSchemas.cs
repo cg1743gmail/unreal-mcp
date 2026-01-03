@@ -310,11 +310,49 @@ public static class ToolSchemas
             new JsonObject
             {
                 ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional canonical asset path for disambiguation (e.g., /Game/Foo/BP_Bar)" },
                 ["property_name"] = new JsonObject { ["type"] = "string", ["description"] = "Property name" },
                 ["property_value"] = new JsonObject { ["description"] = "Property value" }
             },
             new JsonArray { "blueprint_name", "property_name", "property_value" }
         ));
+
+        tools.Add(MakeTool(
+            "get_blueprint_property",
+            "Get a property from a Blueprint class default object (CDO)",
+            new JsonObject
+            {
+                ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional canonical asset path for disambiguation (e.g., /Game/Foo/BP_Bar)" },
+                ["property_name"] = new JsonObject { ["type"] = "string", ["description"] = "Property name" }
+            },
+            new JsonArray { "blueprint_name", "property_name" }
+        ));
+
+        tools.Add(MakeTool(
+            "list_blueprint_components",
+            "List SCS components in a Blueprint (name + class)",
+            new JsonObject
+            {
+                ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional canonical asset path for disambiguation (e.g., /Game/Foo/BP_Bar)" }
+            },
+            new JsonArray { "blueprint_name" }
+        ));
+
+        tools.Add(MakeTool(
+            "get_component_property",
+            "Get a property from a Blueprint component template (SCS)",
+            new JsonObject
+            {
+                ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional canonical asset path for disambiguation (e.g., /Game/Foo/BP_Bar)" },
+                ["component_name"] = new JsonObject { ["type"] = "string", ["description"] = "Component name in Blueprint (e.g., Mesh, RotatingMovement)" },
+                ["property_name"] = new JsonObject { ["type"] = "string", ["description"] = "Property name on the component" }
+            },
+            new JsonArray { "blueprint_name", "component_name", "property_name" }
+        ));
+
 
         tools.Add(MakeTool(
             "set_pawn_properties",

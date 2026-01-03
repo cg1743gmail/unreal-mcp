@@ -16,6 +16,7 @@
 #include "Camera/CameraActor.h"
 #include "Kismet/GameplayStatics.h"
 #include "EdGraphSchema_K2.h"
+#include "ScopedTransaction.h"
 
 // Declare the log category
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealMCP, Log, All);
@@ -71,6 +72,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleConnectBlueprintN
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
     FString SourceNodeId;
     if (!Params->TryGetStringField(TEXT("source_node_id"), SourceNodeId))
     {
@@ -95,11 +100,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleConnectBlueprintN
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'target_pin' parameter"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -129,15 +154,28 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleConnectBlueprintN
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source or target node not found"));
     }
 
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Connect Blueprint Nodes")));
+    Blueprint->Modify();
+    EventGraph->Modify();
+    SourceNode->Modify();
+    TargetNode->Modify();
+
     // Connect the nodes
     if (FUnrealMCPCommonUtils::ConnectGraphNodes(EventGraph, SourceNode, SourcePinName, TargetNode, TargetPinName))
     {
-        // Mark the blueprint as modified
-        FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+        // Graph wiring is structural.
+        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+        Blueprint->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("source_node_id"), SourceNodeId);
         ResultObj->SetStringField(TEXT("target_node_id"), TargetNodeId);
+        ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+        if (!ObjectPath.IsEmpty())
+        {
+            ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+        }
         return ResultObj;
     }
 
@@ -153,6 +191,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
     FString ComponentName;
     if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
     {
@@ -166,11 +208,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
         NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -179,38 +241,51 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
-    
+
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add GetSelf Component Reference")));
+    Blueprint->Modify();
+    EventGraph->Modify();
+
     // We'll skip component verification since the GetAllNodes API may have changed in UE5.5
-    
+
     // Create the variable get node directly
     UK2Node_VariableGet* GetComponentNode = NewObject<UK2Node_VariableGet>(EventGraph);
     if (!GetComponentNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create get component node"));
     }
-    
+    GetComponentNode->SetFlags(RF_Transactional);
+    GetComponentNode->Modify();
+
     // Set up the variable reference properly for UE5.5
     FMemberReference& VarRef = GetComponentNode->VariableReference;
     VarRef.SetSelfMember(FName(*ComponentName));
-    
+
     // Set node position
     GetComponentNode->NodePosX = NodePosition.X;
     GetComponentNode->NodePosY = NodePosition.Y;
-    
+
     // Add to graph
     EventGraph->AddNode(GetComponentNode);
     GetComponentNode->CreateNewGuid();
     GetComponentNode->PostPlacedNewNode();
     GetComponentNode->AllocateDefaultPins();
-    
+
     // Explicitly reconstruct node for UE5.5
     GetComponentNode->ReconstructNode();
-    
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+    // Graph/node insertion is structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), GetComponentNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -222,6 +297,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintEvent
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
 
     FString EventName;
     if (!Params->TryGetStringField(TEXT("event_name"), EventName))
@@ -236,11 +315,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintEvent
         NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -250,18 +349,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintEvent
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
 
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Blueprint Event Node")));
+    Blueprint->Modify();
+    EventGraph->Modify();
+
     // Create the event node
     UK2Node_Event* EventNode = FUnrealMCPCommonUtils::CreateEventNode(EventGraph, EventName, NodePosition);
     if (!EventNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create event node"));
     }
+    EventNode->SetFlags(RF_Transactional);
+    EventNode->Modify();
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    // Node insertion is structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), EventNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -273,6 +385,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
 
     FString FunctionName;
     if (!Params->TryGetStringField(TEXT("function_name"), FunctionName))
@@ -291,11 +407,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
     FString Target;
     Params->TryGetStringField(TEXT("target"), Target);
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -304,6 +440,11 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
+
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Blueprint Function Call")));
+    Blueprint->Modify();
+    EventGraph->Modify();
 
     // Find the function
     UFunction* Function = nullptr;
@@ -662,11 +803,23 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
         }
     }
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    if (FunctionNode)
+    {
+        FunctionNode->SetFlags(RF_Transactional);
+        FunctionNode->Modify();
+    }
+
+    // Node insertion is structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), FunctionNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -678,6 +831,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
 
     FString VariableName;
     if (!Params->TryGetStringField(TEXT("variable_name"), VariableName))
@@ -698,12 +855,36 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
         IsExposed = Params->GetBoolField(TEXT("is_exposed"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
     }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
+    }
+
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Blueprint Variable")));
+    Blueprint->Modify();
 
     // Create variable based on type
     FEdGraphPinType PinType;
@@ -758,12 +939,18 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
         }
     }
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    // Member variable changes are structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("variable_name"), VariableName);
     ResultObj->SetStringField(TEXT("variable_type"), VariableType);
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -775,6 +962,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintInput
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
+
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
 
     FString ActionName;
     if (!Params->TryGetStringField(TEXT("action_name"), ActionName))
@@ -789,11 +980,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintInput
         NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -803,18 +1014,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintInput
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
 
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Blueprint Input Action Node")));
+    Blueprint->Modify();
+    EventGraph->Modify();
+
     // Create the input action node
     UK2Node_InputAction* InputActionNode = FUnrealMCPCommonUtils::CreateInputActionNode(EventGraph, ActionName, NodePosition);
     if (!InputActionNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create input action node"));
     }
+    InputActionNode->SetFlags(RF_Transactional);
+    InputActionNode->Modify();
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    // Node insertion is structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), InputActionNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -827,6 +1051,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintSelfR
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
     }
 
+    // Optional (recommended): disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
     // Get position parameters (optional)
     FVector2D NodePosition(0.0f, 0.0f);
     if (Params->HasField(TEXT("node_position")))
@@ -834,11 +1062,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintSelfR
         NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
     }
 
-    // Find the blueprint
-    UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+    // Resolve the Blueprint (path recommended; name-only is allowed if unique)
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    FString ObjectPath;
+    {
+        FString PathErr;
+        FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr);
     }
 
     // Get the event graph
@@ -848,18 +1096,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintSelfR
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get event graph"));
     }
 
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Blueprint Self Reference Node")));
+    Blueprint->Modify();
+    EventGraph->Modify();
+
     // Create the self node
     UK2Node_Self* SelfNode = FUnrealMCPCommonUtils::CreateSelfReferenceNode(EventGraph, NodePosition);
     if (!SelfNode)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create self node"));
     }
+    SelfNode->SetFlags(RF_Transactional);
+    SelfNode->Modify();
 
-    // Mark the blueprint as modified
-    FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+    // Node insertion is structural.
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
 
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetStringField(TEXT("node_id"), SelfNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+    if (!ObjectPath.IsEmpty())
+    {
+        ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+    }
     return ResultObj;
 }
 
@@ -919,6 +1180,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
     
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("node_guids"), NodeGuidArray);
-    
+
+    FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
+
     return ResultObj;
 } 

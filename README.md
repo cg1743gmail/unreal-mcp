@@ -55,14 +55,18 @@ All these capabilities are accessible through natural language commands via AI a
 
 ### Sidecar MCP Server (EXE) `Sidecar/UnrealMCP.Sidecar` (optional)
 - Windows-friendly replacement for the Python MCP server (still proxies to the UE plugin on port 55557)
-- **Version 0.2.0**: Enhanced with detailed tool schemas, prompts capability, and UE connection detection
+- **Version 0.3.0**: Production-grade improvements + detailed tool schemas/prompts/resources
 - Publish: `Sidecar/publish_sidecar.bat`
 - MCP client config example: `mcp.sidecar.json`
-- **P0/P1 Features** (v0.2.0):
-  - ✅ Detailed `inputSchema` for all 45+ tools (AI调用成功率从 50% → 90%+)
-  - ✅ `prompts` capability: `unreal.usage_guide` (400+ lines best practices)
+- **Key Features**:
+  - ✅ Detailed `inputSchema` for all 45+ tools
+  - ✅ `prompts` capability: `unreal.usage_guide`
   - ✅ `initialize` returns UE connection status (`_meta.unrealConnection`)
-- **Roadmap**: See `Docs/p0-p2-implementation-guide.md` for P2/UE-plugin upgrade plan
+  - ✅ `unreal.batch` tool (UE-batch-first with safe fallback)
+  - ✅ `--version` / `--health` and JSON logging (`UNREAL_MCP_LOG_JSON=1`)
+- **Docs**: See `Sidecar/SidecarDoc/README.md`
+- **Roadmap**: See `Sidecar/SidecarDoc/p0-p2-implementation-guide.md` for P2/UE-plugin upgrade plan
+
 
 
 ## 📂 Directory Structure
@@ -113,10 +117,24 @@ Otherwise, if you want to use the plugin in your existing project:
 3. **Build the plugin**
    - Right-click your .uproject file
    - Generate Visual Studio project files
-   - Open solution (`.sln)
+   - Open solution (`.sln`)
    - Build with your target platform and output settings
 
+### Asset routing & write safety
+
+By default, UnrealMCP creates new assets under `/Game/UnrealMCP/...` and (when enabled) restricts write operations to an allowlist root.
+
+- Configure defaults in `DefaultEngine.ini` under `[UnrealMCP]`:
+  - `DefaultBlueprintFolder`
+  - `DefaultWidgetFolder`
+  - `AllowedWriteRoots` (comma-separated)
+  - `bStrictWriteAllowlist`
+- Most creation tools accept destination overrides:
+  - `asset_path` / `blueprint_path`: exact long package asset path (e.g. `/Game/MyFolder/BP_Test`)
+  - `folder_path` / `package_path`: destination folder (e.g. `/Game/MyFolder/`)
+
 ### Python Server Setup
+
 
 See [Python/README.md](Python/README.md) for detailed Python setup instructions, including:
 - Setting up your Python environment

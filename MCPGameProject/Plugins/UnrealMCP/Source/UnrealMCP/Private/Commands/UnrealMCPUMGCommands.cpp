@@ -25,6 +25,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_Event.h"
+#include "ScopedTransaction.h"
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
 {
@@ -69,23 +70,64 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
 	}
 
-	// Create the full asset path
-	FString PackagePath = TEXT("/Game/Widgets/");
+	// Resolve destination asset path (safe + configurable)
 	FString AssetName = BlueprintName;
-	FString FullPath = PackagePath + AssetName;
+
+	FString FolderPath = FUnrealMCPCommonUtils::GetDefaultWidgetFolder();
+	Params->TryGetStringField(TEXT("package_path"), FolderPath);
+	Params->TryGetStringField(TEXT("folder_path"), FolderPath);
+
+	FString RequestedAssetPath;
+	Params->TryGetStringField(TEXT("asset_path"), RequestedAssetPath);
+	Params->TryGetStringField(TEXT("blueprint_path"), RequestedAssetPath); // alias
+
+	FString FullAssetPath;
+	FString Err;
+	if (!RequestedAssetPath.IsEmpty())
+	{
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(RequestedAssetPath, FullAssetPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid asset_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
+	}
+	else
+	{
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageFolder(FolderPath, FolderPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid folder_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
+		FullAssetPath = FolderPath + AssetName;
+	}
+
+	if (!FUnrealMCPCommonUtils::IsWritePathAllowed(FullAssetPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Write path not allowed"), TEXT("ERR_WRITE_PATH_NOT_ALLOWED"), Err);
+	}
+
+	FString ObjectPath;
+	if (!FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(FullAssetPath, ObjectPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid destination path"), TEXT("ERR_INVALID_PATH"), Err);
+	}
 
 	// Check if asset already exists
-	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+	if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' already exists"), *BlueprintName));
 	}
 
+
 	// Create package
-	UPackage* Package = CreatePackage(*FullPath);
+	UPackage* Package = CreatePackage(*FullAssetPath);
 	if (!Package)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package"));
 	}
+
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Create UMG Widget Blueprint")));
+	Package->SetFlags(RF_Transactional);
+	Package->Modify();
 
 	// Create Widget Blueprint using KismetEditorUtilities
 	UBlueprint* NewBlueprint = FKismetEditorUtilities::CreateBlueprint(
@@ -104,17 +146,32 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Widget Blueprint"));
 	}
+	WidgetBlueprint->SetFlags(RF_Transactional);
+	WidgetBlueprint->Modify();
+
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->SetFlags(RF_Transactional);
+		WidgetBlueprint->WidgetTree->Modify();
+	}
 
 	// Add a default Canvas Panel if one doesn't exist
-	if (!WidgetBlueprint->WidgetTree->RootWidget)
+	if (WidgetBlueprint->WidgetTree && !WidgetBlueprint->WidgetTree->RootWidget)
 	{
 		UCanvasPanel* RootCanvas = WidgetBlueprint->WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass());
-		WidgetBlueprint->WidgetTree->RootWidget = RootCanvas;
+		if (RootCanvas)
+		{
+			RootCanvas->SetFlags(RF_Transactional);
+			RootCanvas->Modify();
+			WidgetBlueprint->WidgetTree->RootWidget = RootCanvas;
+		}
 	}
 
 	// Mark the package dirty and notify asset registry
 	Package->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(WidgetBlueprint);
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 
 	// Compile the blueprint
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
@@ -122,8 +179,11 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 	// Create success response
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetStringField(TEXT("name"), BlueprintName);
-	ResultObj->SetStringField(TEXT("path"), FullPath);
+	ResultObj->SetStringField(TEXT("path"), FullAssetPath); // legacy
+	ResultObj->SetStringField(TEXT("object_path"), ObjectPath); // legacy
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, FullAssetPath);
 	return ResultObj;
+
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const TSharedPtr<FJsonObject>& Params)
@@ -141,13 +201,27 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
 	}
 
-	// Find the Widget Blueprint
-	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
+	// Resolve the Widget Blueprint (path recommended; name-only is allowed if unique)
+	FString BlueprintPath;
+	Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+	FString ResolvedPath;
+	TArray<FString> Candidates;
+	UWidgetBlueprint* WidgetBlueprint = FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
 	if (!WidgetBlueprint)
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+		FString Details;
+		if (Candidates.Num() > 1)
+		{
+			Details = TEXT("Multiple widget blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+			for (const FString& C : Candidates)
+			{
+				Details += TEXT("- ") + C + TEXT("\n");
+			}
+		}
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(FString::Printf(TEXT("Widget Blueprint '%s' not found or ambiguous"), *BlueprintName), TEXT("ERR_ASSET_NOT_FOUND"), Details);
 	}
+
 
 	// Get optional parameters
 	FString InitialText = TEXT("New Text Block");
@@ -164,12 +238,22 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 		}
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add TextBlock to Widget")));
+	WidgetBlueprint->Modify();
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->Modify();
+	}
+
 	// Create Text Block widget
 	UTextBlock* TextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *WidgetName);
 	if (!TextBlock)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Text Block widget"));
 	}
+	TextBlock->SetFlags(RF_Transactional);
+	TextBlock->Modify();
 
 	// Set initial text
 	TextBlock->SetText(FText::FromString(InitialText));
@@ -180,18 +264,34 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
 	}
+	RootCanvas->Modify();
 
 	UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(TextBlock);
-	PanelSlot->SetPosition(Position);
+	if (PanelSlot)
+	{
+		PanelSlot->SetFlags(RF_Transactional);
+		PanelSlot->Modify();
+		PanelSlot->SetPosition(Position);
+	}
 
 	// Mark the package dirty and compile
 	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 
 	// Create success response
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetStringField(TEXT("widget_name"), WidgetName);
 	ResultObj->SetStringField(TEXT("text"), InitialText);
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+	{
+		FString ObjectPath;
+		FString PathErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+		{
+			ResultObj->SetStringField(TEXT("object_path"), ObjectPath);
+		}
+	}
 	return ResultObj;
 }
 
@@ -204,13 +304,27 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddWidgetToViewport(const T
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
 	}
 
-	// Find the Widget Blueprint
-	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
+	// Resolve the Widget Blueprint (path recommended; name-only is allowed if unique)
+	FString BlueprintPath;
+	Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+	FString ResolvedPath;
+	TArray<FString> Candidates;
+	UWidgetBlueprint* WidgetBlueprint = FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
 	if (!WidgetBlueprint)
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+		FString Details;
+		if (Candidates.Num() > 1)
+		{
+			Details = TEXT("Multiple widget blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+			for (const FString& C : Candidates)
+			{
+				Details += TEXT("- ") + C + TEXT("\n");
+			}
+		}
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(FString::Printf(TEXT("Widget Blueprint '%s' not found or ambiguous"), *BlueprintName), TEXT("ERR_ASSET_NOT_FOUND"), Details);
 	}
+
 
 	// Get optional Z-order parameter
 	int32 ZOrder = 0;
@@ -233,12 +347,15 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddWidgetToViewport(const T
 	ResultObj->SetStringField(TEXT("class_path"), WidgetClass->GetPathName());
 	ResultObj->SetNumberField(TEXT("z_order"), ZOrder);
 	ResultObj->SetStringField(TEXT("note"), TEXT("Widget class ready. Use CreateWidget and AddToViewport nodes in Blueprint to display in game."));
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, ResolvedPath);
 	return ResultObj;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
+	Response->SetBoolField(TEXT("success"), false);
+
 
 	// Get required parameters
 	FString BlueprintName;
@@ -262,14 +379,24 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Resolve the Widget Blueprint
+	FString BlueprintPath;
+	Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+	FString ResolvedPath;
+	TArray<FString> Candidates;
+	UWidgetBlueprint* WidgetBlueprint = FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		FString Msg = FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName);
+		if (Candidates.Num() > 1)
+		{
+			Msg += TEXT(" (ambiguous; pass blueprint_path)");
+		}
+		Response->SetStringField(TEXT("error"), Msg);
 		return Response;
 	}
+
 
 	// Create Button widget
 	UButton* Button = NewObject<UButton>(WidgetBlueprint->GeneratedClass->GetDefaultObject(), UButton::StaticClass(), *WidgetName);
@@ -310,18 +437,57 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 		}
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Bind Widget Event")));
+	WidgetBlueprint->Modify();
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->Modify();
+	}
+
 	// Save the Widget Blueprint
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-	UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+
+	// NOTE: BlueprintPath may be empty when the caller resolves by name only.
+	// Prefer saving via the resolved asset path.
+	{
+		FString SaveObjectPath;
+		FString SaveErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, SaveObjectPath, SaveErr))
+		{
+			UEditorAssetLibrary::SaveAsset(SaveObjectPath, false);
+		}
+		else if (!BlueprintPath.IsEmpty())
+		{
+			UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+		}
+	}
 
 	Response->SetBoolField(TEXT("success"), true);
 	Response->SetStringField(TEXT("widget_name"), WidgetName);
+	Response->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+	{
+		FString ObjectPath;
+		FString PathErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+		{
+			Response->SetStringField(TEXT("object_path"), ObjectPath);
+		}
+	}
 	return Response;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
+	Response->SetBoolField(TEXT("success"), false);
+
 
 	// Get required parameters
 	FString BlueprintName;
@@ -345,14 +511,24 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Resolve the Widget Blueprint
+	FString BlueprintPath;
+	Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+	FString ResolvedPath;
+	TArray<FString> Candidates;
+	UWidgetBlueprint* WidgetBlueprint = FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		FString Msg = FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName);
+		if (Candidates.Num() > 1)
+		{
+			Msg += TEXT(" (ambiguous; pass blueprint_path)");
+		}
+		Response->SetStringField(TEXT("error"), Msg);
 		return Response;
 	}
+
 
 	// Create the event graph if it doesn't exist
 	UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(WidgetBlueprint);
@@ -432,18 +608,55 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleBindWidgetEvent(const TShar
 		return Response;
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Bind Widget Event")));
+	WidgetBlueprint->Modify();
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->Modify();
+	}
+
 	// Save the Widget Blueprint
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-	UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+
+	{
+		FString SaveObjectPath;
+		FString SaveErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, SaveObjectPath, SaveErr))
+		{
+			UEditorAssetLibrary::SaveAsset(SaveObjectPath, false);
+		}
+		else if (!BlueprintPath.IsEmpty())
+		{
+			UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+		}
+	}
 
 	Response->SetBoolField(TEXT("success"), true);
 	Response->SetStringField(TEXT("event_name"), EventName);
+	Response->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+	{
+		FString ObjectPath;
+		FString PathErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+		{
+			Response->SetStringField(TEXT("object_path"), ObjectPath);
+		}
+	}
 	return Response;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const TSharedPtr<FJsonObject>& Params)
 {
 	TSharedPtr<FJsonObject> Response = MakeShared<FJsonObject>();
+	Response->SetBoolField(TEXT("success"), false);
+
 
 	// Get required parameters
 	FString BlueprintName;
@@ -467,13 +680,31 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 		return Response;
 	}
 
-	// Load the Widget Blueprint
-	const FString BlueprintPath = FString::Printf(TEXT("/Game/Widgets/%s.%s"), *BlueprintName, *BlueprintName);
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	// Resolve the Widget Blueprint
+	FString BlueprintPath;
+	Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+	FString ResolvedPath;
+	TArray<FString> Candidates;
+	UWidgetBlueprint* WidgetBlueprint = FUnrealMCPCommonUtils::ResolveWidgetBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
 	if (!WidgetBlueprint)
 	{
-		Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintPath));
+		FString Msg = FString::Printf(TEXT("Failed to load Widget Blueprint: %s"), *BlueprintName);
+		if (Candidates.Num() > 1)
+		{
+			Msg += TEXT(" (ambiguous; pass blueprint_path)");
+		}
+		Response->SetStringField(TEXT("error"), Msg);
 		return Response;
+	}
+
+
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Set TextBlock Binding")));
+	WidgetBlueprint->Modify();
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->Modify();
 	}
 
 	// Create a variable for binding if it doesn't exist
@@ -536,9 +767,36 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 
 	// Save the Widget Blueprint
 	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-	UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	WidgetBlueprint->MarkPackageDirty();
+
+	{
+		FString SaveObjectPath;
+		FString SaveErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, SaveObjectPath, SaveErr))
+		{
+			UEditorAssetLibrary::SaveAsset(SaveObjectPath, false);
+		}
+		else if (!BlueprintPath.IsEmpty())
+		{
+			UEditorAssetLibrary::SaveAsset(BlueprintPath, false);
+		}
+	}
 
 	Response->SetBoolField(TEXT("success"), true);
 	Response->SetStringField(TEXT("binding_name"), BindingName);
+	Response->SetStringField(TEXT("resolved_asset_path"), ResolvedPath);
+	{
+		FString ObjectPath;
+		FString PathErr;
+		if (!ResolvedPath.IsEmpty() && FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(ResolvedPath, ObjectPath, PathErr))
+		{
+			Response->SetStringField(TEXT("object_path"), ObjectPath);
+		}
+	}
 	return Response;
 } 

@@ -63,6 +63,7 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
+#include "ScopedTransaction.h"
 
 FUnrealMCPInterchangeCommands::FUnrealMCPInterchangeCommands()
 {
@@ -240,15 +241,50 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangeBl
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'mesh_path' parameter"));
 	}
 
-	// Destination path for the blueprint
-	FString PackagePath = TEXT("/Game/Blueprints/");
-	FString FullPath = PackagePath + BlueprintName;
+	// Destination path for the blueprint (safe + configurable)
+	FString FolderPath = FUnrealMCPCommonUtils::GetDefaultBlueprintFolder();
+	Params->TryGetStringField(TEXT("package_path"), FolderPath);
+	Params->TryGetStringField(TEXT("folder_path"), FolderPath);
+
+	FString RequestedAssetPath;
+	Params->TryGetStringField(TEXT("asset_path"), RequestedAssetPath);
+	Params->TryGetStringField(TEXT("blueprint_path"), RequestedAssetPath); // alias
+
+	FString FullAssetPath;
+	FString Err;
+	if (!RequestedAssetPath.IsEmpty())
+	{
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(RequestedAssetPath, FullAssetPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid asset_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
+	}
+	else
+	{
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageFolder(FolderPath, FolderPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid folder_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
+		FullAssetPath = FolderPath + BlueprintName;
+	}
+
+	if (!FUnrealMCPCommonUtils::IsWritePathAllowed(FullAssetPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Write path not allowed"), TEXT("ERR_WRITE_PATH_NOT_ALLOWED"), Err);
+	}
+
+	FString ObjectPath;
+	if (!FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(FullAssetPath, ObjectPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid destination path"), TEXT("ERR_INVALID_PATH"), Err);
+	}
 
 	// Check if blueprint already exists
-	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+	if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
 	}
+
 
 	// Load the mesh
 	UObject* MeshObject = UEditorAssetLibrary::LoadAsset(MeshPath);
@@ -280,7 +316,8 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangeBl
 	UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
 	Factory->ParentClass = ParentClass;
 
-	UPackage* Package = CreatePackage(*FullPath);
+	UPackage* Package = CreatePackage(*FullAssetPath);
+
 	UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(UBlueprint::StaticClass(), Package, *BlueprintName, RF_Standalone | RF_Public, nullptr, GWarn));
 
 	if (!NewBlueprint)
@@ -325,8 +362,12 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangeBl
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("name"), BlueprintName);
-	ResultObj->SetStringField(TEXT("path"), FullPath);
+	ResultObj->SetStringField(TEXT("path"), FullAssetPath); // legacy
+	ResultObj->SetStringField(TEXT("object_path"), ObjectPath); // legacy
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, FullAssetPath);
+
 	ResultObj->SetStringField(TEXT("mesh_path"), MeshPath);
+
 	ResultObj->SetStringField(TEXT("component_type"), ComponentClass ? ComponentClass->GetName() : TEXT("None"));
 
 	UE_LOG(LogTemp, Log, TEXT("Successfully created Interchange Blueprint: %s"), *BlueprintName);
@@ -343,28 +384,49 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateCustomInterch
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
 	}
 
-	FString PackagePath = TEXT("/Game/Blueprints/");
-	Params->TryGetStringField(TEXT("package_path"), PackagePath);
+	// Destination path (safe + configurable)
+	FString FolderPath = FUnrealMCPCommonUtils::GetDefaultBlueprintFolder();
+	Params->TryGetStringField(TEXT("package_path"), FolderPath);
+	Params->TryGetStringField(TEXT("folder_path"), FolderPath);
 
-	// Ensure package path starts with /Game/
-	if (!PackagePath.StartsWith(TEXT("/Game/")))
+	FString RequestedAssetPath;
+	Params->TryGetStringField(TEXT("asset_path"), RequestedAssetPath);
+	Params->TryGetStringField(TEXT("blueprint_path"), RequestedAssetPath); // alias
+
+	FString FullAssetPath;
+	FString Err;
+	if (!RequestedAssetPath.IsEmpty())
 	{
-		PackagePath = TEXT("/Game/") + PackagePath;
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(RequestedAssetPath, FullAssetPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid asset_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
 	}
-	
-	// Ensure package path ends with /
-	if (!PackagePath.EndsWith(TEXT("/")))
+	else
 	{
-		PackagePath += TEXT("/");
+		if (!FUnrealMCPCommonUtils::NormalizeLongPackageFolder(FolderPath, FolderPath, Err))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid folder_path"), TEXT("ERR_INVALID_PATH"), Err);
+		}
+		FullAssetPath = FolderPath + BlueprintName;
 	}
 
-	FString FullPath = PackagePath + BlueprintName;
+	if (!FUnrealMCPCommonUtils::IsWritePathAllowed(FullAssetPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Write path not allowed"), TEXT("ERR_WRITE_PATH_NOT_ALLOWED"), Err);
+	}
 
-	// Check if blueprint already exists
-	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+	FString ObjectPath;
+	if (!FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(FullAssetPath, ObjectPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid destination path"), TEXT("ERR_INVALID_PATH"), Err);
+	}
+
+	if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
 	}
+
 
 	// Get optional parent class
 	FString ParentClassName;
@@ -413,7 +475,8 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateCustomInterch
 	UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
 	Factory->ParentClass = ParentClass;
 
-	UPackage* Package = CreatePackage(*FullPath);
+	UPackage* Package = CreatePackage(*FullAssetPath);
+
 	UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(UBlueprint::StaticClass(), Package, *BlueprintName, RF_Standalone | RF_Public, nullptr, GWarn));
 
 	if (!NewBlueprint)
@@ -539,9 +602,13 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateCustomInterch
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("name"), BlueprintName);
-	ResultObj->SetStringField(TEXT("path"), FullPath);
+	ResultObj->SetStringField(TEXT("path"), FullAssetPath); // legacy
+	ResultObj->SetStringField(TEXT("object_path"), ObjectPath); // legacy
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, FullAssetPath);
+
 	ResultObj->SetStringField(TEXT("parent_class"), ParentClass->GetName());
 	ResultObj->SetStringField(TEXT("type"), TEXT("interchange_blueprint"));
+
 
 	UE_LOG(LogTemp, Log, TEXT("Successfully created custom Interchange Blueprint: %s"), *BlueprintName);
 
@@ -602,8 +669,11 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangeAsset
 	{
 		TSharedPtr<FJsonObject> AssetObj = MakeShared<FJsonObject>();
 		AssetObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
-		AssetObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+		AssetObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString()); // legacy (object path)
+		AssetObj->SetStringField(TEXT("resolved_asset_path"), AssetData.PackageName.ToString());
+		AssetObj->SetStringField(TEXT("object_path"), AssetData.GetObjectPathString());
 		AssetObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+
 
 		AssetsArray.Add(MakeShared<FJsonValueObject>(AssetObj));
 	}
@@ -623,12 +693,22 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleReimportAsset(const
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
 	}
 
+	// Normalize asset path (accept object path; return canonical long package asset path)
+	FString NormalizedAssetPath;
+	FString Err;
+	if (!FUnrealMCPCommonUtils::NormalizeLongPackageAssetPath(AssetPath, NormalizedAssetPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid asset_path"), TEXT("ERR_INVALID_PATH"), Err);
+	}
+	AssetPath = NormalizedAssetPath;
+
 	// Load the asset
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+	UObject* Asset = FUnrealMCPCommonUtils::LoadAssetByPathSmart(AssetPath);
 	if (!Asset)
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(FString::Printf(TEXT("Asset not found: %s"), *AssetPath), TEXT("ERR_ASSET_NOT_FOUND"), TEXT(""));
 	}
+
 
 	// Check if asset has import data
 	if (!Asset->IsA<UStaticMesh>() && !Asset->IsA<USkeletalMesh>() && !Asset->IsA<UTexture2D>() && !Asset->IsA<UMaterial>())
@@ -641,8 +721,10 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleReimportAsset(const
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), bReimportSuccess);
-	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath); // legacy
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, AssetPath);
 	ResultObj->SetStringField(TEXT("message"), bReimportSuccess ? TEXT("Asset reimport triggered") : TEXT("Reimport failed"));
+
 
 	UE_LOG(LogTemp, Log, TEXT("Triggered reimport for asset: %s (success: %s)"), *AssetPath, bReimportSuccess ? TEXT("true") : TEXT("false"));
 
@@ -757,26 +839,34 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 	}
 
 	// Get optional parameters
-	FString PackagePath = TEXT("/Game/Interchange/Pipelines/");
-	Params->TryGetStringField(TEXT("package_path"), PackagePath);
+	FString FolderPath = TEXT("/Game/UnrealMCP/Interchange/Pipelines/");
+	Params->TryGetStringField(TEXT("package_path"), FolderPath);
+	Params->TryGetStringField(TEXT("folder_path"), FolderPath);
 
-	// Ensure package path format
-	if (!PackagePath.StartsWith(TEXT("/Game/")))
+	FString Err;
+	if (!FUnrealMCPCommonUtils::NormalizeLongPackageFolder(FolderPath, FolderPath, Err))
 	{
-		PackagePath = TEXT("/Game/") + PackagePath;
-	}
-	if (!PackagePath.EndsWith(TEXT("/")))
-	{
-		PackagePath += TEXT("/");
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid folder_path"), TEXT("ERR_INVALID_PATH"), Err);
 	}
 
-	FString FullPath = PackagePath + PipelineName;
+	FString FullAssetPath = FolderPath + PipelineName;
 
-	// Check if already exists
-	if (UEditorAssetLibrary::DoesAssetExist(FullPath))
+	if (!FUnrealMCPCommonUtils::IsWritePathAllowed(FullAssetPath, Err))
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline blueprint already exists: %s"), *FullPath));
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Write path not allowed"), TEXT("ERR_WRITE_PATH_NOT_ALLOWED"), Err);
 	}
+
+	FString ObjectPath;
+	if (!FUnrealMCPCommonUtils::MakeObjectPathFromAssetPath(FullAssetPath, ObjectPath, Err))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponseEx(TEXT("Invalid destination path"), TEXT("ERR_INVALID_PATH"), Err);
+	}
+
+	if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline blueprint already exists: %s"), *FullAssetPath));
+	}
+
 
 	// Get parent pipeline class (default to UInterchangeGenericAssetsPipeline)
 	FString ParentClassName;
@@ -813,7 +903,8 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 	}
 
 	// Create package
-	UPackage* Package = CreatePackage(*FullPath);
+	UPackage* Package = CreatePackage(*FullAssetPath);
+
 	if (!Package)
 	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for pipeline blueprint"));
@@ -859,7 +950,11 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("name"), PipelineName);
-	ResultObj->SetStringField(TEXT("path"), FullPath);
+	ResultObj->SetStringField(TEXT("path"), FullAssetPath); // legacy
+	ResultObj->SetStringField(TEXT("object_path"), ObjectPath); // legacy
+	FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, FullAssetPath);
+
+
 	ResultObj->SetStringField(TEXT("parent_class"), ParentPipelineClass->GetName());
 	ResultObj->SetStringField(TEXT("type"), TEXT("InterchangePipelineBlueprint"));
 	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline Blueprint created. Open in editor to configure import settings."));
@@ -895,9 +990,12 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipel
 	{
 		TSharedPtr<FJsonObject> PipelineObj = MakeShared<FJsonObject>();
 		PipelineObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
-		PipelineObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+		PipelineObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString()); // legacy (object path)
+		PipelineObj->SetStringField(TEXT("resolved_asset_path"), AssetData.PackageName.ToString());
+		PipelineObj->SetStringField(TEXT("object_path"), AssetData.GetObjectPathString());
 		PipelineObj->SetStringField(TEXT("type"), TEXT("Blueprint"));
 		PipelineObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+
 		PipelinesArray.Add(MakeShared<FJsonValueObject>(PipelineObj));
 	}
 
@@ -1029,6 +1127,10 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConfigureInterchang
 		}
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Configure Interchange Pipeline")));
+	PipelineBlueprint->Modify();
+	
 	// Mark the blueprint as modified
 	PipelineBlueprint->MarkPackageDirty();
 
@@ -1036,6 +1138,7 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConfigureInterchang
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 	ResultObj->SetStringField(TEXT("pipeline_class"), GeneratedClass->GetName());
 	ResultObj->SetArrayField(TEXT("configured_properties"), ConfiguredProperties);
 	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline configured. Save the asset to persist changes."));
@@ -1108,6 +1211,7 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipel
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 	ResultObj->SetStringField(TEXT("blueprint_name"), PipelineBlueprint->GetName());
 
 	// Get parent class info
@@ -1355,6 +1459,10 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangePipel
 		NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Interchange Pipeline Node")));
+	PipelineBlueprint->Modify();
+
 	// Get the event graph (or first available graph)
 	UEdGraph* TargetGraph = nullptr;
 	if (PipelineBlueprint->UbergraphPages.Num() > 0)
@@ -1469,14 +1577,16 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangePipel
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create node"));
 	}
 
-	// Mark blueprint as modified
-	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+	// Node insertion is structural.
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
+	PipelineBlueprint->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("node_id"), NewNode->NodeGuid.ToString());
 	ResultObj->SetStringField(TEXT("node_type"), NodeType);
 	ResultObj->SetStringField(TEXT("node_class"), NewNode->GetClass()->GetName());
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 
 	// List output pins
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
@@ -1608,6 +1718,22 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConnectInterchangeP
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Target pin not found: %s"), *TargetPinName));
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Connect Interchange Pipeline Nodes")));
+	PipelineBlueprint->Modify();
+	if (FoundGraph)
+	{
+		FoundGraph->Modify();
+	}
+	if (SourceNode)
+	{
+		SourceNode->Modify();
+	}
+	if (TargetNode)
+	{
+		TargetNode->Modify();
+	}
+
 	// Make the connection
 	if (!FoundGraph)
 	{
@@ -1631,7 +1757,8 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConnectInterchangeP
 	bool bConnected = Schema->TryCreateConnection(SourcePin, TargetPin);
 	if (bConnected)
 	{
-		FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
+		PipelineBlueprint->MarkPackageDirty();
 
 		TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 		ResultObj->SetBoolField(TEXT("success"), true);
@@ -1640,6 +1767,7 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleConnectInterchangeP
 		ResultObj->SetStringField(TEXT("source_pin"), SourcePinName);
 		ResultObj->SetStringField(TEXT("target_pin"), TargetPinName);
 		ResultObj->SetStringField(TEXT("message"), TEXT("Nodes connected successfully"));
+		ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 
 		UE_LOG(LogTemp, Log, TEXT("Connected nodes in pipeline %s"), *PipelinePath);
 
@@ -1801,6 +1929,11 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangeItera
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Graph not found: %s. Create function override first."), *GraphName));
 	}
 
+	// Transaction + Modify for stable Undo/Redo
+	const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Interchange IterateNodes Block")));
+	PipelineBlueprint->Modify();
+	TargetGraph->Modify();
+
 	// Create the IterateNodesOfType function call
 	// Note: This is a templated function, so we need to set it up properly
 	UK2Node_CallFunction* IterateNode = NewObject<UK2Node_CallFunction>(TargetGraph);
@@ -1830,7 +1963,8 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangeItera
 	IterateNode->PostPlacedNewNode();
 	IterateNode->AllocateDefaultPins();
 
-	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
+	PipelineBlueprint->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
@@ -1838,6 +1972,7 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleAddInterchangeItera
 	ResultObj->SetStringField(TEXT("node_class"), NodeClass);
 	ResultObj->SetStringField(TEXT("graph_name"), TargetGraph->GetName());
 	ResultObj->SetStringField(TEXT("message"), TEXT("Iterate nodes block created. Connect to node container and add processing logic."));
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 
 	// List pins
 	TArray<TSharedPtr<FJsonValue>> PinsArray;
@@ -1873,11 +2008,13 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCompileInterchangeP
 	}
 
 	// Mark as modified - actual compilation will happen when user saves or uses the blueprint
-	FBlueprintEditorUtils::MarkBlueprintAsModified(PipelineBlueprint);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
+	PipelineBlueprint->MarkPackageDirty();
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
+	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
 	ResultObj->SetStringField(TEXT("status"), TEXT("Modified"));
 	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline marked as modified. Compile in Blueprint Editor for full validation."));
 

@@ -1,0 +1,2 @@
+F:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.pdb
+F:\MyLife_Project\UGIT\UEMCP\Sidecar\publish\win-x64\UnrealMCP.Sidecar.exe

@@ -6,10 +6,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>UnrealMCP.Sidecar</AssemblyName>
+
+    <!-- Version management: single source of truth -->
+    <Version>0.3.0</Version>
+    <AssemblyVersion>0.3.0.0</AssemblyVersion>
+    <FileVersion>0.3.0.0</FileVersion>
+    <InformationalVersion>0.3.0</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
     <!-- Single-file is optional; keep simple for dev. -->
     <DebugType>portable</DebugType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Allow test project to access internal members -->
+    <InternalsVisibleTo Include="UnrealMCP.Sidecar.Tests" />
+  </ItemGroup>
 </Project>
