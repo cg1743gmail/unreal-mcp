@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("UnrealMCP.Sidecar")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.3.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.3.0+2eddc238d5ec688435314f066e8fd88576ce3474")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.3.0+7af6c882d6c111d209548fd75f590155ee789694")]
 [assembly: System.Reflection.AssemblyProductAttribute("UnrealMCP.Sidecar")]
 [assembly: System.Reflection.AssemblyTitleAttribute("UnrealMCP.Sidecar")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.3.0.0")]

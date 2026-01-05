@@ -1,0 +1,35 @@
+========================================
+在 UE Editor 中执行此 Python 命令
+========================================
+
+步骤：
+1. 打开 UE Editor 的 Output Log 窗口
+   Window > Developer Tools > Output Log
+
+2. 在底部命令行输入框中粘贴以下命令（一行）：
+
+py "import unreal; old='/Game/Pipelines/BPI_FBXMaterial'; unreal.EditorAssetLibrary.delete_asset(old) if unreal.EditorAssetLibrary.does_asset_exist(old) else None; bp=unreal.InterchangeBlueprintPipelineBaseLibrary.create_interchange_pipeline_blueprint('/Game/Pipelines','BPI_FBXMaterial',unreal.InterchangeBlueprintPipelineBase); print('SUCCESS: Created',bp.get_path_name()) if bp else print('FAILED'); unreal.EditorAssetLibrary.save_loaded_asset(bp) if bp else None"
+
+3. 按 Enter 执行
+
+4. 查看 Output Log 输出：
+   - 如果看到 "SUCCESS: Created /Game/Pipelines/BPI_FBXMaterial" 表示成功
+   - 如果看到错误，请复制错误信息
+
+5. 成功后，在 Content Browser 中找到：
+   Content/Pipelines/BPI_FBXMaterial
+
+6. 双击打开，应该不会再报错了！
+
+========================================
+如果上述命令不work，使用备用方法：
+========================================
+
+Content Browser > 右键 > Interchange > Blueprint Pipeline
+- Parent Class: InterchangeBlueprintPipelineBase
+- Name: BPI_FBXMaterial
+- Location: /Game/Pipelines
+
+保存即可。
+
+========================================

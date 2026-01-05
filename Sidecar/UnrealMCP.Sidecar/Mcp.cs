@@ -78,6 +78,16 @@ internal static class Mcp
         "get_interchange_assets",
         "reimport_asset",
         "get_interchange_info",
+        "create_interchange_pipeline_blueprint",
+        "get_interchange_pipelines",
+        "configure_interchange_pipeline",
+        "get_interchange_pipeline_graph",
+        "add_interchange_pipeline_function_override",
+        "add_interchange_pipeline_node",
+        "connect_interchange_pipeline_nodes",
+        "find_interchange_pipeline_nodes",
+        "add_interchange_iterate_nodes_block",
+        "compile_interchange_pipeline",
 
         // Misc
         "ping"

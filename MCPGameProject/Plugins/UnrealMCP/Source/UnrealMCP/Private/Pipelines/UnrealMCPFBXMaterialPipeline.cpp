@@ -52,6 +52,14 @@ void UUnrealMCPFBXMaterialPipeline::InitializeDefaultTextureMappings()
 	TextureParameterMapping.Add(TEXT("Opacity"), TEXT("OpacityTexture"));
 	TextureParameterMapping.Add(TEXT("Height"), TEXT("HeightTexture"));
 	TextureParameterMapping.Add(TEXT("Displacement"), TEXT("HeightTexture"));
+
+	// Texture suffix mappings (e.g., Character_D.png, Character_NRA.png)
+	TextureParameterMapping.Add(TEXT("_D"), TEXT("BaseColorTexture"));
+	TextureParameterMapping.Add(TEXT("_NRA"), TEXT("PackedTexture"));
+	TextureParameterMapping.Add(TEXT("_N"), TEXT("NormalTexture"));
+	TextureParameterMapping.Add(TEXT("_R"), TEXT("RoughnessTexture"));
+	TextureParameterMapping.Add(TEXT("_M"), TEXT("MetallicTexture"));
+	TextureParameterMapping.Add(TEXT("_AO"), TEXT("AmbientOcclusionTexture"));
 }
 
 void UUnrealMCPFBXMaterialPipeline::ExecutePipeline(

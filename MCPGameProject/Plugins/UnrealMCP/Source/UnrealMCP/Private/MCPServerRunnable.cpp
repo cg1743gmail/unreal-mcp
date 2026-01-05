@@ -11,10 +11,12 @@
 // Buffer size for receiving data
 static const int32 MCP_BUFFER_SIZE = 8192;
 
-FMCPServerRunnable::FMCPServerRunnable(UUnrealMCPBridge* InBridge, TSharedPtr<FSocket> InListenerSocket)
+FMCPServerRunnable::FMCPServerRunnable(UUnrealMCPBridge* InBridge, FSocket* InListenerSocket)
     : Bridge(InBridge)
     , ListenerSocket(InListenerSocket)
+    , ClientSocket(nullptr)
     , bRunning(true)
+
 {
     UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Created server runnable"));
 }
@@ -36,12 +38,12 @@ uint32 FMCPServerRunnable::Run()
     while (bRunning)
     {
         bool bPending = false;
-        if (ListenerSocket.IsValid() && ListenerSocket->HasPendingConnection(bPending) && bPending)
+        if (ListenerSocket && ListenerSocket->HasPendingConnection(bPending) && bPending)
         {
             UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Client connection pending, accepting..."));
 
-            ClientSocket = MakeShareable(ListenerSocket->Accept(TEXT("MCPClient")));
-            if (ClientSocket.IsValid())
+            ClientSocket = ListenerSocket->Accept(TEXT("MCPClient"));
+            if (ClientSocket)
             {
                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Client accepted"));
 
@@ -55,7 +57,8 @@ uint32 FMCPServerRunnable::Run()
                 HandleClientConnection(ClientSocket);
 
                 ClientSocket->Close();
-                ClientSocket.Reset();
+                ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ClientSocket);
+                ClientSocket = nullptr;
             }
             else
             {
@@ -79,7 +82,7 @@ void FMCPServerRunnable::Exit()
 {
 }
 
-static bool SendAll(TSharedPtr<FSocket> Socket, const uint8* Data, int32 TotalBytes)
+static bool SendAll(FSocket* Socket, const uint8* Data, int32 TotalBytes)
 {
     int32 Offset = 0;
     while (Offset < TotalBytes)
@@ -98,9 +101,9 @@ static bool SendAll(TSharedPtr<FSocket> Socket, const uint8* Data, int32 TotalBy
     return true;
 }
 
-void FMCPServerRunnable::HandleClientConnection(TSharedPtr<FSocket> InClientSocket)
+void FMCPServerRunnable::HandleClientConnection(FSocket* InClientSocket)
 {
-    if (!InClientSocket.IsValid() || !Bridge)
+    if (!InClientSocket || !Bridge)
     {
         UE_LOG(LogTemp, Error, TEXT("MCPServerRunnable: Invalid client socket or bridge"));
         return;
@@ -111,7 +114,7 @@ void FMCPServerRunnable::HandleClientConnection(TSharedPtr<FSocket> InClientSock
     const double StartTime = FPlatformTime::Seconds();
     const double TimeoutSeconds = 5.0;
 
-    while (bRunning && InClientSocket.IsValid())
+    while (bRunning && InClientSocket)
     {
         if ((FPlatformTime::Seconds() - StartTime) > TimeoutSeconds)
         {
@@ -228,10 +231,10 @@ void FMCPServerRunnable::HandleClientConnection(TSharedPtr<FSocket> InClientSock
     }
 }
 
-void FMCPServerRunnable::ProcessMessage(TSharedPtr<FSocket> Client, const FString& Message)
+void FMCPServerRunnable::ProcessMessage(FSocket* Client, const FString& Message)
 {
     // Legacy entrypoint (currently unused). Keep behavior consistent with type/params JSON.
-    if (!Client.IsValid() || !Bridge)
+    if (!Client || !Bridge)
     {
         return;
     }

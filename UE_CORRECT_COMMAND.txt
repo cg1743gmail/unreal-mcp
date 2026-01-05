@@ -1,0 +1,47 @@
+========================================
+正确的 UE Editor Python 命令格式
+========================================
+
+在 Output Log 命令行中，每次执行一条命令：
+
+命令 1 - 删除旧 BP：
+py unreal.EditorAssetLibrary.delete_asset('/Game/Pipelines/BPI_FBXMaterial')
+
+命令 2 - 创建新 BP：
+py unreal.InterchangeBlueprintPipelineBaseLibrary.create_interchange_pipeline_blueprint('/Game/Pipelines','BPI_FBXMaterial',unreal.InterchangeBlueprintPipelineBase)
+
+命令 3 - 保存（如果步骤2成功）：
+py unreal.EditorAssetLibrary.save_asset('/Game/Pipelines/BPI_FBXMaterial')
+
+========================================
+或者使用多行 Python 脚本：
+========================================
+
+在 Content Browser 中：
+Tools > Execute Python Script
+
+然后输入以下代码：
+
+import unreal
+
+# 删除旧 BP
+old_path = '/Game/Pipelines/BPI_FBXMaterial'
+if unreal.EditorAssetLibrary.does_asset_exist(old_path):
+    unreal.EditorAssetLibrary.delete_asset(old_path)
+    print(f'Deleted: {old_path}')
+
+# 创建新 BP
+bp = unreal.InterchangeBlueprintPipelineBaseLibrary.create_interchange_pipeline_blueprint(
+    '/Game/Pipelines',
+    'BPI_FBXMaterial',
+    unreal.InterchangeBlueprintPipelineBase
+)
+
+if bp:
+    print(f'SUCCESS: Created {bp.get_path_name()}')
+    unreal.EditorAssetLibrary.save_loaded_asset(bp)
+    print('Saved!')
+else:
+    print('FAILED to create Blueprint')
+
+========================================

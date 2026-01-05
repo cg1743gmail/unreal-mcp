@@ -130,8 +130,8 @@ void UUnrealMCPBridge::StartServer()
     }
 
     // Create listener socket
-    TSharedPtr<FSocket> NewListenerSocket = MakeShareable(SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false));
-    if (!NewListenerSocket.IsValid())
+    FSocket* NewListenerSocket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false);
+    if (!NewListenerSocket)
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to create listener socket"));
         return;
@@ -146,6 +146,7 @@ void UUnrealMCPBridge::StartServer()
     if (!NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to bind listener socket to %s:%d"), *ServerAddress.ToString(), Port);
+        SocketSubsystem->DestroySocket(NewListenerSocket);
         return;
     }
 
@@ -153,6 +154,7 @@ void UUnrealMCPBridge::StartServer()
     if (!NewListenerSocket->Listen(5))
     {
         UE_LOG(LogTemp, Error, TEXT("UnrealMCPBridge: Failed to start listening"));
+        SocketSubsystem->DestroySocket(NewListenerSocket);
         return;
     }
 
@@ -213,17 +215,17 @@ void UUnrealMCPBridge::StopServer()
     }
 
 
-    // Close sockets
-    if (ConnectionSocket.IsValid())
+    // Close sockets (FSocket must be destroyed via ISocketSubsystem, never delete)
+    if (ConnectionSocket)
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ConnectionSocket.Get());
-        ConnectionSocket.Reset();
+        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ConnectionSocket);
+        ConnectionSocket = nullptr;
     }
 
-    if (ListenerSocket.IsValid())
+    if (ListenerSocket)
     {
-        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ListenerSocket.Get());
-        ListenerSocket.Reset();
+        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ListenerSocket);
+        ListenerSocket = nullptr;
     }
 
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server stopped"));
@@ -371,7 +373,17 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 InCommandType == TEXT("create_custom_interchange_blueprint") ||
                 InCommandType == TEXT("get_interchange_assets") ||
                 InCommandType == TEXT("reimport_asset") ||
-                InCommandType == TEXT("get_interchange_info"))
+                InCommandType == TEXT("get_interchange_info") ||
+                InCommandType == TEXT("create_interchange_pipeline_blueprint") ||
+                InCommandType == TEXT("get_interchange_pipelines") ||
+                InCommandType == TEXT("configure_interchange_pipeline") ||
+                InCommandType == TEXT("get_interchange_pipeline_graph") ||
+                InCommandType == TEXT("add_interchange_pipeline_function_override") ||
+                InCommandType == TEXT("add_interchange_pipeline_node") ||
+                InCommandType == TEXT("connect_interchange_pipeline_nodes") ||
+                InCommandType == TEXT("find_interchange_pipeline_nodes") ||
+                InCommandType == TEXT("add_interchange_iterate_nodes_block") ||
+                InCommandType == TEXT("compile_interchange_pipeline"))
             {
                 return InterchangeCommands->HandleCommand(InCommandType, InParams);
             }
