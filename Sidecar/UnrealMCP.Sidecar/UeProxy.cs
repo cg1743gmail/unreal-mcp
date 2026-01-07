@@ -65,15 +65,22 @@ internal static class UeProxy
             ["_mcp"] = meta
         };
 
-
+        // Support per-command timeout override via _mcp.timeout_ms
+        // This allows long-running operations (e.g., compile_blueprint for complex blueprints) to have extended timeouts
+        int effectiveTimeoutMs = TimeoutMs;
+        if (meta["timeout_ms"] is JsonValue timeoutValue && timeoutValue.TryGetValue<int>(out var customTimeout) && customTimeout > 0)
+        {
+            effectiveTimeoutMs = customTimeout;
+            Log.Info($"Using custom timeout: {effectiveTimeoutMs}ms for command: {commandType}");
+        }
 
         var json = payload.ToJsonString(JsonUtil.JsonOptions);
         var bytes = Encoding.UTF8.GetBytes(json);
 
         using var client = new TcpClient
         {
-            ReceiveTimeout = TimeoutMs,
-            SendTimeout = TimeoutMs
+            ReceiveTimeout = effectiveTimeoutMs,
+            SendTimeout = effectiveTimeoutMs
         };
 
         await client.ConnectAsync(Host, Port, ct);
@@ -110,7 +117,8 @@ internal static class UeProxy
         sb.Append(Encoding.UTF8.GetString(header, 0, 4));
 
         const int MaxRawJsonBytes = 64 * 1024 * 1024;
-        const int RawJsonReadTimeoutMs = 5000; // Additional timeout for raw JSON accumulation
+        // Use effective timeout for raw JSON accumulation as well
+        int rawJsonReadTimeoutMs = Math.Max(5000, effectiveTimeoutMs / 2);
         var buffer = new byte[4096];
         var rawReadStart = DateTime.UtcNow;
 
@@ -120,8 +128,8 @@ internal static class UeProxy
                 throw new InvalidOperationException("UE raw JSON response exceeded maximum size");
 
             // Timeout protection for raw JSON accumulation
-            if ((DateTime.UtcNow - rawReadStart).TotalMilliseconds > RawJsonReadTimeoutMs)
-                throw new TimeoutException($"UE raw JSON response read timed out after {RawJsonReadTimeoutMs}ms");
+            if ((DateTime.UtcNow - rawReadStart).TotalMilliseconds > rawJsonReadTimeoutMs)
+                throw new TimeoutException($"UE raw JSON response read timed out after {rawJsonReadTimeoutMs}ms");
 
             try
             {

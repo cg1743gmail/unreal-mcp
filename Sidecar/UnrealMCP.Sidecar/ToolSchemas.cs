@@ -493,6 +493,35 @@ public static class ToolSchemas
             new JsonArray { "blueprint_name" }
         ));
 
+        // ==================== Construction Script Tools ====================
+        tools.Add(MakeTool(
+            "get_construction_script_graph",
+            "Get the Construction Script graph of an Actor-based Blueprint. Returns all nodes, entry node ID, and pin information. Construction Script runs in editor when properties change.",
+            new JsonObject
+            {
+                ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional: full asset path for disambiguation" }
+            },
+            new JsonArray { "blueprint_name" }
+        ));
+
+        tools.Add(MakeTool(
+            "add_construction_script_node",
+            "Add a node to the Construction Script graph. Supported node_type: FunctionCall, VariableGet, VariableSet, Self, GetComponent. Use connect_blueprint_nodes to wire nodes.",
+            new JsonObject
+            {
+                ["blueprint_name"] = new JsonObject { ["type"] = "string", ["description"] = "Blueprint name" },
+                ["node_type"] = new JsonObject { ["type"] = "string", ["description"] = "Node type: FunctionCall, VariableGet, VariableSet, Self, GetComponent" },
+                ["function_name"] = new JsonObject { ["type"] = "string", ["description"] = "For FunctionCall: function name (e.g., SetRelativeLocation)" },
+                ["target"] = new JsonObject { ["type"] = "string", ["description"] = "For FunctionCall: target class (e.g., SceneComponent, Actor)" },
+                ["variable_name"] = new JsonObject { ["type"] = "string", ["description"] = "For VariableGet/VariableSet: variable name" },
+                ["component_name"] = new JsonObject { ["type"] = "string", ["description"] = "For GetComponent: component name to reference" },
+                ["node_position"] = new JsonObject { ["type"] = "array", ["description"] = "[X, Y] position in graph", ["items"] = new JsonObject { ["type"] = "number" }, ["default"] = new JsonArray { 0, 0 } },
+                ["blueprint_path"] = new JsonObject { ["type"] = "string", ["description"] = "Optional: full asset path for disambiguation" }
+            },
+            new JsonArray { "blueprint_name", "node_type" }
+        ));
+
         // ==================== Project Tools ====================
         tools.Add(MakeTool(
             "create_input_mapping",

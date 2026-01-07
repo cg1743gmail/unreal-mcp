@@ -8,6 +8,8 @@
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
+#include "K2Node_FunctionEntry.h"
 #include "K2Node_InputAction.h"
 #include "K2Node_Self.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -58,6 +60,15 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("find_blueprint_nodes"))
     {
         return HandleFindBlueprintNodes(Params);
+    }
+    // Construction Script graph operations
+    else if (CommandType == TEXT("get_construction_script_graph"))
+    {
+        return HandleGetConstructionScriptGraph(Params);
+    }
+    else if (CommandType == TEXT("add_construction_script_node"))
+    {
+        return HandleAddConstructionScriptNode(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint node command: %s"), *CommandType));
@@ -1182,6 +1193,404 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
     ResultObj->SetArrayField(TEXT("node_guids"), NodeGuidArray);
 
     FUnrealMCPCommonUtils::AddResolvedAssetFieldsFromUObject(ResultObj, Blueprint);
+
+    return ResultObj;
+}
+
+// ============================================================================
+// Construction Script Graph Operations
+// ============================================================================
+
+UEdGraph* FUnrealMCPBlueprintNodeCommands::FindConstructionScriptGraph(UBlueprint* Blueprint) const
+{
+    if (!Blueprint)
+    {
+        return nullptr;
+    }
+
+    // Construction Script is stored in FunctionGraphs with the name "UserConstructionScript"
+    for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+    {
+        if (Graph && Graph->GetFName() == UEdGraphSchema_K2::FN_UserConstructionScript)
+        {
+            return Graph;
+        }
+    }
+
+    return nullptr;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleGetConstructionScriptGraph(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    // Optional: disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    // Resolve the Blueprint
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
+    if (!Blueprint)
+    {
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    // Find Construction Script graph
+    UEdGraph* ConstructionScriptGraph = FindConstructionScriptGraph(Blueprint);
+    if (!ConstructionScriptGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint does not have a Construction Script graph. Only Actor-based blueprints have Construction Script."));
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("graph_name"), ConstructionScriptGraph->GetName());
+    ResultObj->SetNumberField(TEXT("node_count"), static_cast<double>(ConstructionScriptGraph->Nodes.Num()));
+
+    // Find entry node
+    FString EntryNodeId;
+    for (UEdGraphNode* Node : ConstructionScriptGraph->Nodes)
+    {
+        if (UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(Node))
+        {
+            EntryNodeId = EntryNode->NodeGuid.ToString();
+            break;
+        }
+    }
+    ResultObj->SetStringField(TEXT("entry_node_id"), EntryNodeId);
+
+    // List all nodes
+    TArray<TSharedPtr<FJsonValue>> NodesArray;
+    for (UEdGraphNode* Node : ConstructionScriptGraph->Nodes)
+    {
+        if (!Node)
+            continue;
+
+        TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+        NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+        NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+        NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+        NodeObj->SetNumberField(TEXT("pos_x"), static_cast<double>(Node->NodePosX));
+        NodeObj->SetNumberField(TEXT("pos_y"), static_cast<double>(Node->NodePosY));
+
+        // List pins
+        TArray<TSharedPtr<FJsonValue>> PinsArray;
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (Pin)
+            {
+                TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+                PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+                PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+                PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+            }
+        }
+        NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+        NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+    }
+    ResultObj->SetArrayField(TEXT("nodes"), NodesArray);
+
+    FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, ResolvedPath);
+
+    UE_LOG(LogTemp, Log, TEXT("Retrieved Construction Script graph for blueprint: %s"), *BlueprintName);
+
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddConstructionScriptNode(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    FString NodeType;
+    if (!Params->TryGetStringField(TEXT("node_type"), NodeType))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_type' parameter"));
+    }
+
+    // Optional: disambiguate by canonical asset path
+    FString BlueprintPath;
+    Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath);
+
+    // Get optional parameters
+    FString FunctionName;
+    Params->TryGetStringField(TEXT("function_name"), FunctionName);
+
+    FString Target;
+    Params->TryGetStringField(TEXT("target"), Target);
+
+    FString VariableName;
+    Params->TryGetStringField(TEXT("variable_name"), VariableName);
+
+    FVector2D NodePosition(0.0f, 0.0f);
+    if (Params->HasField(TEXT("node_position")))
+    {
+        NodePosition = FUnrealMCPCommonUtils::GetVector2DFromJson(Params, TEXT("node_position"));
+    }
+
+    // Resolve the Blueprint
+    FString ResolvedPath;
+    TArray<FString> Candidates;
+    UBlueprint* Blueprint = FUnrealMCPCommonUtils::ResolveBlueprintFromNameOrPath(BlueprintName, BlueprintPath, ResolvedPath, Candidates);
+    if (!Blueprint)
+    {
+        FString Details;
+        if (Candidates.Num() > 1)
+        {
+            Details = TEXT("Multiple blueprints matched by name. Please pass blueprint_path. Candidates:\n");
+            for (const FString& C : Candidates)
+            {
+                Details += TEXT("- ") + C + TEXT("\n");
+            }
+        }
+        return FUnrealMCPCommonUtils::CreateErrorResponseEx(
+            FString::Printf(TEXT("Blueprint '%s' not found or ambiguous"), *BlueprintName),
+            TEXT("ERR_ASSET_NOT_FOUND"),
+            Details);
+    }
+
+    // Find Construction Script graph
+    UEdGraph* ConstructionScriptGraph = FindConstructionScriptGraph(Blueprint);
+    if (!ConstructionScriptGraph)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint does not have a Construction Script graph. Only Actor-based blueprints have Construction Script."));
+    }
+
+    // Transaction + Modify for stable Undo/Redo
+    const FScopedTransaction Transaction(FText::FromString(TEXT("UnrealMCP: Add Construction Script Node")));
+    Blueprint->Modify();
+    ConstructionScriptGraph->Modify();
+
+    UEdGraphNode* NewNode = nullptr;
+
+    if (NodeType == TEXT("FunctionCall"))
+    {
+        if (FunctionName.IsEmpty())
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'function_name' parameter for FunctionCall node"));
+        }
+
+        // Find the function
+        UFunction* TargetFunction = nullptr;
+        UClass* TargetClass = nullptr;
+
+        if (!Target.IsEmpty())
+        {
+            // Try to find the target class
+            TargetClass = FindObject<UClass>(ANY_PACKAGE, *Target);
+            if (!TargetClass && !Target.StartsWith(TEXT("U")))
+            {
+                TargetClass = FindObject<UClass>(ANY_PACKAGE, *(TEXT("U") + Target));
+            }
+            if (!TargetClass)
+            {
+                TargetClass = FindObject<UClass>(ANY_PACKAGE, *(Target + TEXT("Component")));
+            }
+            if (!TargetClass)
+            {
+                TargetClass = FindObject<UClass>(ANY_PACKAGE, *(TEXT("U") + Target + TEXT("Component")));
+            }
+
+            if (TargetClass)
+            {
+                TargetFunction = TargetClass->FindFunctionByName(*FunctionName);
+            }
+        }
+
+        // Try blueprint's generated class if not found
+        if (!TargetFunction && Blueprint->GeneratedClass)
+        {
+            TargetFunction = Blueprint->GeneratedClass->FindFunctionByName(*FunctionName);
+        }
+
+        // Try common classes
+        if (!TargetFunction)
+        {
+            // Try AActor
+            TargetFunction = AActor::StaticClass()->FindFunctionByName(*FunctionName);
+        }
+        if (!TargetFunction)
+        {
+            // Try USceneComponent
+            TargetFunction = USceneComponent::StaticClass()->FindFunctionByName(*FunctionName);
+        }
+
+        if (TargetFunction)
+        {
+            UK2Node_CallFunction* FunctionNode = NewObject<UK2Node_CallFunction>(ConstructionScriptGraph);
+            FunctionNode->SetFromFunction(TargetFunction);
+            FunctionNode->NodePosX = NodePosition.X;
+            FunctionNode->NodePosY = NodePosition.Y;
+
+            ConstructionScriptGraph->AddNode(FunctionNode);
+            FunctionNode->CreateNewGuid();
+            FunctionNode->PostPlacedNewNode();
+            FunctionNode->AllocateDefaultPins();
+
+            NewNode = FunctionNode;
+        }
+        else
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Function not found: %s"), *FunctionName));
+        }
+    }
+    else if (NodeType == TEXT("VariableGet"))
+    {
+        if (VariableName.IsEmpty())
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'variable_name' parameter for VariableGet node"));
+        }
+
+        UK2Node_VariableGet* VarGetNode = NewObject<UK2Node_VariableGet>(ConstructionScriptGraph);
+        
+        // Use GUID for stable variable reference (UE5 best practice)
+        FGuid VarGuid = FBlueprintEditorUtils::FindMemberVariableGuidByName(Blueprint, FName(*VariableName));
+        VarGetNode->VariableReference.SetSelfMember(FName(*VariableName), VarGuid);
+        
+        VarGetNode->NodePosX = NodePosition.X;
+        VarGetNode->NodePosY = NodePosition.Y;
+
+        ConstructionScriptGraph->AddNode(VarGetNode);
+        VarGetNode->CreateNewGuid();
+        VarGetNode->PostPlacedNewNode();
+        VarGetNode->AllocateDefaultPins();
+        VarGetNode->ReconstructNode();
+
+        NewNode = VarGetNode;
+    }
+    else if (NodeType == TEXT("VariableSet"))
+    {
+        if (VariableName.IsEmpty())
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'variable_name' parameter for VariableSet node"));
+        }
+
+        UK2Node_VariableSet* VarSetNode = NewObject<UK2Node_VariableSet>(ConstructionScriptGraph);
+        
+        // Use GUID for stable variable reference (UE5 best practice)
+        FGuid VarGuid = FBlueprintEditorUtils::FindMemberVariableGuidByName(Blueprint, FName(*VariableName));
+        VarSetNode->VariableReference.SetSelfMember(FName(*VariableName), VarGuid);
+        
+        VarSetNode->NodePosX = NodePosition.X;
+        VarSetNode->NodePosY = NodePosition.Y;
+
+        ConstructionScriptGraph->AddNode(VarSetNode);
+        VarSetNode->CreateNewGuid();
+        VarSetNode->PostPlacedNewNode();
+        VarSetNode->AllocateDefaultPins();
+        VarSetNode->ReconstructNode();
+
+        NewNode = VarSetNode;
+    }
+    else if (NodeType == TEXT("Self"))
+    {
+        UK2Node_Self* SelfNode = NewObject<UK2Node_Self>(ConstructionScriptGraph);
+        SelfNode->NodePosX = NodePosition.X;
+        SelfNode->NodePosY = NodePosition.Y;
+
+        ConstructionScriptGraph->AddNode(SelfNode);
+        SelfNode->CreateNewGuid();
+        SelfNode->PostPlacedNewNode();
+        SelfNode->AllocateDefaultPins();
+
+        NewNode = SelfNode;
+    }
+    else if (NodeType == TEXT("GetComponent"))
+    {
+        // Get a component reference (similar to add_blueprint_get_self_component_reference)
+        FString ComponentName;
+        if (!Params->TryGetStringField(TEXT("component_name"), ComponentName))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'component_name' parameter for GetComponent node"));
+        }
+
+        UK2Node_VariableGet* GetComponentNode = NewObject<UK2Node_VariableGet>(ConstructionScriptGraph);
+        
+        // Use GUID for stable component reference (UE5 best practice)
+        FGuid CompGuid = FBlueprintEditorUtils::FindMemberVariableGuidByName(Blueprint, FName(*ComponentName));
+        GetComponentNode->VariableReference.SetSelfMember(FName(*ComponentName), CompGuid);
+        
+        GetComponentNode->NodePosX = NodePosition.X;
+        GetComponentNode->NodePosY = NodePosition.Y;
+
+        ConstructionScriptGraph->AddNode(GetComponentNode);
+        GetComponentNode->CreateNewGuid();
+        GetComponentNode->PostPlacedNewNode();
+        GetComponentNode->AllocateDefaultPins();
+        GetComponentNode->ReconstructNode();
+
+        NewNode = GetComponentNode;
+    }
+    else
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown node type for Construction Script: %s. Supported: FunctionCall, VariableGet, VariableSet, Self, GetComponent"), *NodeType));
+    }
+
+    if (!NewNode)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create node"));
+    }
+
+    NewNode->SetFlags(RF_Transactional);
+    NewNode->Modify();
+
+    // Mark blueprint as modified
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+    Blueprint->MarkPackageDirty();
+
+    // Build result
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("node_id"), NewNode->NodeGuid.ToString());
+    ResultObj->SetStringField(TEXT("node_type"), NodeType);
+    ResultObj->SetStringField(TEXT("node_class"), NewNode->GetClass()->GetName());
+    ResultObj->SetStringField(TEXT("graph_name"), TEXT("UserConstructionScript"));
+
+    // List output pins
+    TArray<TSharedPtr<FJsonValue>> PinsArray;
+    for (UEdGraphPin* Pin : NewNode->Pins)
+    {
+        if (Pin)
+        {
+            TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+            PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+            PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+            PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+            PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+        }
+    }
+    ResultObj->SetArrayField(TEXT("pins"), PinsArray);
+
+    FUnrealMCPCommonUtils::AddResolvedAssetFields(ResultObj, ResolvedPath);
+
+    UE_LOG(LogTemp, Log, TEXT("Added %s node to Construction Script of blueprint: %s"), *NodeType, *BlueprintName);
 
     return ResultObj;
 } 

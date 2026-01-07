@@ -63,7 +63,7 @@ public static class UnrealMcpUsageGuide
 - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
 
 
-## Blueprint Node Management
+## Blueprint Node Management (Event Graph)
 - `add_blueprint_event_node(blueprint_name, event_name)` - Add event nodes (e.g., ReceiveBeginPlay, ReceiveTick)
 - `add_blueprint_input_action_node(blueprint_name, action_name)` - Add input nodes
 - `add_blueprint_function_node(blueprint_name, target, function_name)` - Add function nodes
@@ -73,8 +73,40 @@ public static class UnrealMcpUsageGuide
 - `add_blueprint_self_reference(blueprint_name)` - Add self references
 - `find_blueprint_nodes(blueprint_name, node_type, event_type)` - Find nodes
 
+## Construction Script (Editor-Time Initialization)
+Construction Script is a special graph that runs in the editor when an Actor is placed or properties change.
+Only Actor-based Blueprints have Construction Script.
+
+- `get_construction_script_graph(blueprint_name, blueprint_path="")` 
+  Get Construction Script graph info: entry node, all nodes, and their pins
+- `add_construction_script_node(blueprint_name, node_type, ...)`
+  Add nodes to Construction Script. Supported node_type:
+  - `FunctionCall`: function_name, target (class name)
+  - `VariableGet`: variable_name
+  - `VariableSet`: variable_name
+  - `Self`: no extra params
+  - `GetComponent`: component_name
+- Use `connect_blueprint_nodes` to wire Construction Script nodes (same as Event Graph)
+
+### Construction Script Workflow
+1. Get the graph with `get_construction_script_graph` to find entry node
+2. Add nodes with `add_construction_script_node`
+3. Connect nodes starting from entry node's ""then"" pin
+4. Compile with `compile_blueprint`
+
 ## Project Tools
 - `create_input_mapping(action_name, key, input_type)` - Create input mappings
+
+## Advanced: Per-Command Timeout
+For long-running operations (e.g., compiling complex Blueprints), you can override the default 10s timeout:
+```json
+{
+  ""_mcp"": {
+    ""timeout_ms"": 60000
+  }
+}
+```
+This is passed in the MCP request metadata.
 
 ## Best Practices
 
@@ -119,6 +151,11 @@ public static class UnrealMcpUsageGuide
 3. Add function call nodes
 4. Connect nodes from event → function calls
 5. Always compile the Blueprint after graph changes
+
+### Construction Script vs Event Graph
+- Use **Construction Script** for editor-time setup (procedural mesh placement, preview visualization)
+- Use **Event Graph** for runtime logic (gameplay, input handling)
+- Construction Script runs every time properties change in editor - keep it fast!
 
 ### Error Handling
 - Check command responses for success field

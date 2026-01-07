@@ -24,4 +24,11 @@ private:
     TSharedPtr<FJsonObject> HandleAddBlueprintInputActionNode(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleAddBlueprintSelfReference(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleFindBlueprintNodes(const TSharedPtr<FJsonObject>& Params);
+    
+    // Construction Script graph operations
+    TSharedPtr<FJsonObject> HandleGetConstructionScriptGraph(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleAddConstructionScriptNode(const TSharedPtr<FJsonObject>& Params);
+    
+    // Helper to find Construction Script graph
+    UEdGraph* FindConstructionScriptGraph(UBlueprint* Blueprint) const;
 }; 

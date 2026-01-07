@@ -49,6 +49,8 @@ internal static class Mcp
         "get_blueprint_property",
 
 
+
+
         // Blueprint nodes
         "connect_blueprint_nodes",
         "add_blueprint_get_self_component_reference",
@@ -59,6 +61,10 @@ internal static class Mcp
         "add_blueprint_function_node",
         "add_blueprint_get_component_node",
         "add_blueprint_variable",
+
+        // Construction Script
+        "get_construction_script_graph",
+        "add_construction_script_node",
 
         // Project
         "create_input_mapping",
