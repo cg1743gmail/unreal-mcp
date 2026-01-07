@@ -1,0 +1,48 @@
+========================================
+在 UE Editor 中执行检查
+========================================
+
+1. 打开 Python Script Editor (Tools > Execute Python Script)
+
+2. 粘贴以下代码：
+
+import unreal
+
+bp_path = '/Game/Pipelines/BPI_FBXMaterial'
+
+# Check if exists
+if not unreal.EditorAssetLibrary.does_asset_exist(bp_path):
+    print(f'[ERROR] Blueprint not found: {bp_path}')
+else:
+    print(f'[OK] Blueprint exists: {bp_path}')
+    
+    # Load Blueprint
+    bp = unreal.load_asset(bp_path)
+    print(f'[OK] Loaded: {bp}')
+    print(f'     Type: {type(bp)}')
+    
+    # Get parent class
+    if bp:
+        gen_class = bp.generated_class()
+        print(f'[OK] Generated Class: {gen_class}')
+        print(f'     Type: {type(gen_class).__name__}')
+        
+        # Use get_super_struct() for UStruct hierarchy
+        parent_class = gen_class.get_super_struct()
+        print(f'[OK] Parent Class: {parent_class}')
+        print(f'     Parent Name: {parent_class.get_name()}')
+        
+        # Check if it's InterchangeBlueprintPipelineBase
+        base = unreal.InterchangeBlueprintPipelineBase
+        if gen_class.is_child_of(base):
+            print('\n[SUCCESS] Blueprint IS InterchangeBlueprintPipelineBase child!')
+        else:
+            print(f'\n[FAILED] Blueprint is NOT InterchangeBlueprintPipelineBase child')
+            print(f'         Expected parent: InterchangeBlueprintPipelineBase')
+            print(f'         Actual parent: {parent_class.get_name() if parent_class else "None"}')
+
+3. 点击 Execute
+
+4. 复制输出结果告诉我
+
+========================================

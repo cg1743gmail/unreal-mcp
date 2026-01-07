@@ -864,8 +864,19 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 
 	if (UEditorAssetLibrary::DoesAssetExist(ObjectPath))
 	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline blueprint already exists: %s"), *FullAssetPath));
+		bool bOverwrite = false;
+		Params->TryGetBoolField(TEXT("overwrite"), bOverwrite);
+		if (!bOverwrite)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline blueprint already exists: %s"), *FullAssetPath));
+		}
+
+		if (!UEditorAssetLibrary::DeleteAsset(ObjectPath))
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to delete existing pipeline blueprint: %s"), *FullAssetPath));
+		}
 	}
+
 
 
 	// Get parent pipeline class (default to UInterchangeGenericAssetsPipeline)
@@ -895,6 +906,25 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 		{
 			ParentPipelineClass = UInterchangePipelineBase::StaticClass();
 		}
+		else if (ParentClassName == TEXT("BlueprintPipelineBase") || ParentClassName == TEXT("UInterchangeBlueprintPipelineBase"))
+		{
+			// Scripted Pipeline Base - for Blueprint implementations
+			ParentPipelineClass = UInterchangeBlueprintPipelineBase::StaticClass();
+		}
+		else if (ParentClassName == TEXT("EditorBlueprintPipelineBase") || ParentClassName == TEXT("UInterchangeEditorBlueprintPipelineBase"))
+		{
+			// Editor-only Scripted Pipeline Base (module: InterchangeEditorPipelines)
+			UClass* EditorClass = FindObject<UClass>(nullptr, TEXT("/Script/InterchangeEditorPipelines.InterchangeEditorBlueprintPipelineBase"));
+			if (EditorClass)
+			{
+				ParentPipelineClass = EditorClass;
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("InterchangeEditorBlueprintPipelineBase not found, falling back to InterchangeBlueprintPipelineBase"));
+				ParentPipelineClass = UInterchangeBlueprintPipelineBase::StaticClass();
+			}
+		}
 		else if (ParentClassName == TEXT("FBXMaterialPipeline") || ParentClassName == TEXT("UUnrealMCPFBXMaterialPipeline"))
 		{
 			// Custom FBX Material Instance Pipeline
@@ -910,17 +940,22 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create package for pipeline blueprint"));
 	}
 
-	// Determine the correct Blueprint class based on parent
-	// For UInterchangeBlueprintPipelineBase derivatives, use that as BlueprintClass
-	// For other Pipeline classes, use standard UBlueprint
-	UClass* BlueprintClass = UBlueprint::StaticClass();
+	// Create an Interchange Pipeline Blueprint asset (NOT a normal UBlueprint asset).
+	// Interchange pipeline blueprints are special asset types that derive from UBlueprint:
+	// - UInterchangeBlueprintPipelineBase
+	// - UInterchangeEditorBlueprintPipelineBase (editor-only)
+	UClass* BlueprintClass = UInterchangeBlueprintPipelineBase::StaticClass();
 	UClass* BlueprintGeneratedClass = UBlueprintGeneratedClass::StaticClass();
-	
-	// Check if parent is derived from UInterchangeBlueprintPipelineBase
-	if (ParentPipelineClass->IsChildOf(UInterchangeBlueprintPipelineBase::StaticClass()))
+
+	// If the selected parent pipeline is editor-only, prefer the editor blueprint asset class when available.
+	UClass* EditorPipelineBaseClass = FindObject<UClass>(nullptr, TEXT("/Script/InterchangeEditorPipelines.InterchangeEditorPipelineBase"));
+	if (EditorPipelineBaseClass && ParentPipelineClass->IsChildOf(EditorPipelineBaseClass))
 	{
-		// Use the scripted pipeline blueprint approach
-		BlueprintClass = UBlueprint::StaticClass();
+		UClass* EditorBlueprintAssetClass = FindObject<UClass>(nullptr, TEXT("/Script/InterchangeEditorPipelines.InterchangeEditorBlueprintPipelineBase"));
+		if (EditorBlueprintAssetClass)
+		{
+			BlueprintClass = EditorBlueprintAssetClass;
+		}
 	}
 
 	// Create the Pipeline Blueprint using FKismetEditorUtilities
@@ -946,6 +981,19 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 	// Compile the blueprint
 	FKismetEditorUtilities::CompileBlueprint(NewPipelineBlueprint);
 
+	// Persist asset to disk so it can be found by AssetRegistry on next session
+	// Prefer object path for stability (matches EditorAssetLibrary expectations)
+	if (!ObjectPath.IsEmpty())
+	{
+		UEditorAssetLibrary::SaveAsset(ObjectPath, false);
+	}
+	else
+	{
+		UEditorAssetLibrary::SaveAsset(FullAssetPath, false);
+	}
+
+
+
 	// Prepare result
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
@@ -956,6 +1004,7 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCreateInterchangePi
 
 
 	ResultObj->SetStringField(TEXT("parent_class"), ParentPipelineClass->GetName());
+	ResultObj->SetStringField(TEXT("blueprint_asset_class"), NewPipelineBlueprint->GetClass()->GetName());
 	ResultObj->SetStringField(TEXT("type"), TEXT("InterchangePipelineBlueprint"));
 	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline Blueprint created. Open in editor to configure import settings."));
 
@@ -974,30 +1023,69 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipel
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
+	// 重要：AssetRegistry 的 ClassPaths 过滤匹配的是“资产类”(例如 Blueprint)，
+	// 不是 Blueprint 的父类/GeneratedClass。
+	// 因此这里先拿到所有 Blueprint，再通过加载资产检查 GeneratedClass 是否继承自 UInterchangePipelineBase。
 	FARFilter Filter;
 	Filter.bRecursivePaths = true;
+	Filter.bRecursiveClasses = true; // include derived blueprint asset classes (e.g. UInterchangeBlueprintPipelineBase)
 	Filter.PackagePaths.Add(*SearchPath);
-	Filter.ClassPaths.Add(UInterchangeBlueprintPipelineBase::StaticClass()->GetClassPathName());
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
 
 	TArray<FAssetData> AssetDataList;
 	AssetRegistry.GetAssets(Filter, AssetDataList);
 
-	// Also search for native pipeline classes
 	TArray<TSharedPtr<FJsonValue>> PipelinesArray;
+
+	int32 RejectedBlueprintCount = 0;
+	int32 AcceptedByGeneratedIsPipelineBase = 0;
+	int32 AcceptedByGeneratedIsBlueprintBase = 0;
+	int32 AcceptedByParentIsPipelineBase = 0;
+	int32 AcceptedByParentIsBlueprintBase = 0;
 
 	// Add found blueprint pipelines
 	for (const FAssetData& AssetData : AssetDataList)
 	{
+		UBlueprint* BP = Cast<UBlueprint>(AssetData.GetAsset());
+		if (!BP)
+		{
+			continue;
+		}
+
+		UClass* GenClass = BP->GeneratedClass;
+		UClass* ParentClass = BP->ParentClass;
+
+		const bool bGenIsPipelineBase = (GenClass && GenClass->IsChildOf(UInterchangePipelineBase::StaticClass()));
+		const bool bGenIsBlueprintBase = (GenClass && GenClass->IsChildOf(UInterchangeBlueprintPipelineBase::StaticClass()));
+		const bool bParentIsPipelineBase = (ParentClass && ParentClass->IsChildOf(UInterchangePipelineBase::StaticClass()));
+		const bool bParentIsBlueprintBase = (ParentClass && ParentClass->IsChildOf(UInterchangeBlueprintPipelineBase::StaticClass()));
+
+		const bool bIsPipelineBlueprint = bGenIsPipelineBase || bGenIsBlueprintBase || bParentIsPipelineBase || bParentIsBlueprintBase;
+		if (!bIsPipelineBlueprint)
+		{
+			RejectedBlueprintCount++;
+			continue;
+		}
+
+		AcceptedByGeneratedIsPipelineBase += bGenIsPipelineBase ? 1 : 0;
+		AcceptedByGeneratedIsBlueprintBase += bGenIsBlueprintBase ? 1 : 0;
+		AcceptedByParentIsPipelineBase += bParentIsPipelineBase ? 1 : 0;
+		AcceptedByParentIsBlueprintBase += bParentIsBlueprintBase ? 1 : 0;
+
 		TSharedPtr<FJsonObject> PipelineObj = MakeShared<FJsonObject>();
 		PipelineObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		PipelineObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString()); // legacy (object path)
 		PipelineObj->SetStringField(TEXT("resolved_asset_path"), AssetData.PackageName.ToString());
 		PipelineObj->SetStringField(TEXT("object_path"), AssetData.GetObjectPathString());
+		PipelineObj->SetStringField(TEXT("asset_class"), AssetData.AssetClassPath.ToString());
 		PipelineObj->SetStringField(TEXT("type"), TEXT("Blueprint"));
-		PipelineObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+		PipelineObj->SetStringField(TEXT("class"), GenClass ? GenClass->GetName() : TEXT("None"));
+		PipelineObj->SetStringField(TEXT("parent_class"), ParentClass ? ParentClass->GetName() : TEXT("None"));
 
 		PipelinesArray.Add(MakeShared<FJsonValueObject>(PipelineObj));
 	}
+
+
 
 	// Add available native pipeline classes
 	TArray<TSharedPtr<FJsonValue>> NativePipelinesArray;
@@ -1023,6 +1111,19 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleGetInterchangePipel
 	ResultObj->SetArrayField(TEXT("blueprint_pipelines"), PipelinesArray);
 	ResultObj->SetNumberField(TEXT("blueprint_count"), static_cast<double>(PipelinesArray.Num()));
 	ResultObj->SetArrayField(TEXT("native_pipelines"), NativePipelinesArray);
+	ResultObj->SetNumberField(TEXT("native_count"), static_cast<double>(NativePipelinesArray.Num()));
+	ResultObj->SetNumberField(TEXT("total_count"), static_cast<double>(PipelinesArray.Num() + NativePipelinesArray.Num()));
+
+	// Debug / verification fields
+	ResultObj->SetStringField(TEXT("search_path"), SearchPath);
+	ResultObj->SetStringField(TEXT("filter_mode"), TEXT("UBlueprint assets + (GeneratedClass/ParentClass) IsChildOf(UInterchangePipelineBase or UInterchangeBlueprintPipelineBase)"));
+	ResultObj->SetNumberField(TEXT("scanned_blueprint_asset_count"), static_cast<double>(AssetDataList.Num()));
+	ResultObj->SetNumberField(TEXT("rejected_blueprint_asset_count"), static_cast<double>(RejectedBlueprintCount));
+	ResultObj->SetNumberField(TEXT("accepted_by_gen_is_pipeline_base"), static_cast<double>(AcceptedByGeneratedIsPipelineBase));
+	ResultObj->SetNumberField(TEXT("accepted_by_gen_is_blueprint_base"), static_cast<double>(AcceptedByGeneratedIsBlueprintBase));
+	ResultObj->SetNumberField(TEXT("accepted_by_parent_is_pipeline_base"), static_cast<double>(AcceptedByParentIsPipelineBase));
+	ResultObj->SetNumberField(TEXT("accepted_by_parent_is_blueprint_base"), static_cast<double>(AcceptedByParentIsBlueprintBase));
+
 
 	return ResultObj;
 }
@@ -2007,18 +2108,26 @@ TSharedPtr<FJsonObject> FUnrealMCPInterchangeCommands::HandleCompileInterchangeP
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Pipeline not found: %s"), *PipelinePath));
 	}
 
-	// Mark as modified - actual compilation will happen when user saves or uses the blueprint
+	// Mark as modified and compile the blueprint
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(PipelineBlueprint);
 	PipelineBlueprint->MarkPackageDirty();
+
+	// Compile the blueprint
+	FKismetEditorUtilities::CompileBlueprint(PipelineBlueprint, EBlueprintCompileOptions::None);
+
+	// Save the asset
+	bool bSaved = UEditorAssetLibrary::SaveLoadedAsset(PipelineBlueprint, false);
 
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetBoolField(TEXT("success"), true);
 	ResultObj->SetStringField(TEXT("pipeline_path"), PipelinePath);
 	ResultObj->SetStringField(TEXT("resolved_asset_path"), PipelineBlueprint->GetPathName());
-	ResultObj->SetStringField(TEXT("status"), TEXT("Modified"));
-	ResultObj->SetStringField(TEXT("message"), TEXT("Pipeline marked as modified. Compile in Blueprint Editor for full validation."));
+	ResultObj->SetStringField(TEXT("status"), bSaved ? TEXT("Compiled and Saved") : TEXT("Compiled"));
+	ResultObj->SetStringField(TEXT("message"), bSaved ? 
+		TEXT("Pipeline compiled and saved successfully.") : 
+		TEXT("Pipeline compiled but save failed. Please save manually."));
 
-	UE_LOG(LogTemp, Log, TEXT("Marked pipeline %s as modified"), *PipelinePath);
+	UE_LOG(LogTemp, Log, TEXT("Compiled pipeline %s (Saved: %s)"), *PipelinePath, bSaved ? TEXT("Yes") : TEXT("No"));
 
 	return ResultObj;
 }

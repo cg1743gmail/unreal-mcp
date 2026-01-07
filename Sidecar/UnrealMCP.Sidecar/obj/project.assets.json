@@ -2,7 +2,7 @@
   "version": 3,
   "targets": {
     "net8.0": {
-      "Microsoft.NET.ILLink.Tasks/8.0.16": {
+      "Microsoft.NET.ILLink.Tasks/8.0.22": {
         "type": "package",
         "build": {
           "build/Microsoft.NET.ILLink.Tasks.props": {}
@@ -10,7 +10,7 @@
       }
     },
     "net8.0/win-x64": {
-      "Microsoft.NET.ILLink.Tasks/8.0.16": {
+      "Microsoft.NET.ILLink.Tasks/8.0.22": {
         "type": "package",
         "build": {
           "build/Microsoft.NET.ILLink.Tasks.props": {}
@@ -19,10 +19,10 @@
     }
   },
   "libraries": {
-    "Microsoft.NET.ILLink.Tasks/8.0.16": {
-      "sha512": "0H1QaKpVibe++Zx6EYJQGhrpfz2bBPGiQ7Rpsmx8I3+oKv+ZRRIfVfmcj50KuZlhhRE6V02y5bUjP+V2oPM2ng==",
+    "Microsoft.NET.ILLink.Tasks/8.0.22": {
+      "sha512": "MhcMithKEiyyNkD2ZfbDZPmcOdi0GheGfg8saEIIEfD/fol3iHmcV8TsZkD4ZYz5gdUuoX4YtlVySUU7Sxl9SQ==",
       "type": "package",
-      "path": "microsoft.net.illink.tasks/8.0.16",
+      "path": "microsoft.net.illink.tasks/8.0.22",
       "hasTools": true,
       "files": [
         ".nupkg.metadata",
@@ -36,7 +36,7 @@
         "build/Microsoft.NET.ILLink.Analyzers.props",
         "build/Microsoft.NET.ILLink.Tasks.props",
         "build/Microsoft.NET.ILLink.targets",
-        "microsoft.net.illink.tasks.8.0.16.nupkg.sha512",
+        "microsoft.net.illink.tasks.8.0.22.nupkg.sha512",
         "microsoft.net.illink.tasks.nuspec",
         "tools/net472/ILLink.Tasks.dll",
         "tools/net472/ILLink.Tasks.dll.config",
@@ -73,27 +73,27 @@
   },
   "projectFileDependencyGroups": {
     "net8.0": [
-      "Microsoft.NET.ILLink.Tasks >= 8.0.16"
+      "Microsoft.NET.ILLink.Tasks >= 8.0.22"
     ]
   },
   "packageFolders": {
-    "C:\\Users\\maoshiba\\.nuget\\packages\\": {},
+    "C:\\Users\\ronal\\.nuget\\packages\\": {},
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
     "version": "0.3.0",
     "restore": {
-      "projectUniqueName": "F:\\MyLife_Project\\UGIT\\UEMCP\\Sidecar\\UnrealMCP.Sidecar\\UnrealMCP.Sidecar.csproj",
+      "projectUniqueName": "E:\\Work\\UGit\\UEMCP\\unreal-mcp\\Sidecar\\UnrealMCP.Sidecar\\UnrealMCP.Sidecar.csproj",
       "projectName": "UnrealMCP.Sidecar",
-      "projectPath": "F:\\MyLife_Project\\UGIT\\UEMCP\\Sidecar\\UnrealMCP.Sidecar\\UnrealMCP.Sidecar.csproj",
-      "packagesPath": "C:\\Users\\maoshiba\\.nuget\\packages\\",
-      "outputPath": "F:\\MyLife_Project\\UGIT\\UEMCP\\Sidecar\\UnrealMCP.Sidecar\\obj\\",
+      "projectPath": "E:\\Work\\UGit\\UEMCP\\unreal-mcp\\Sidecar\\UnrealMCP.Sidecar\\UnrealMCP.Sidecar.csproj",
+      "packagesPath": "C:\\Users\\ronal\\.nuget\\packages\\",
+      "outputPath": "E:\\Work\\UGit\\UEMCP\\unreal-mcp\\Sidecar\\UnrealMCP.Sidecar\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
       ],
       "configFilePaths": [
-        "C:\\Users\\maoshiba\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Users\\ronal\\AppData\\Roaming\\NuGet\\NuGet.Config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],
@@ -129,7 +129,7 @@
           "Microsoft.NET.ILLink.Tasks": {
             "suppressParent": "All",
             "target": "Package",
-            "version": "[8.0.16, )",
+            "version": "[8.0.22, )",
             "autoReferenced": true
           }
         },
@@ -149,7 +149,7 @@
             "privateAssets": "all"
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.300/PortableRuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.308/PortableRuntimeIdentifierGraph.json"
       }
     },
     "runtimes": {

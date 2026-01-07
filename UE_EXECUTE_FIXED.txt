@@ -1,0 +1,29 @@
+========================================
+修复后的 UE Editor Python 命令
+========================================
+
+在 UE Editor 的 Output Log 底部命令行中执行：
+
+py import unreal; old='/Game/Pipelines/BPI_FBXMaterial'; unreal.EditorAssetLibrary.delete_asset(old) if unreal.EditorAssetLibrary.does_asset_exist(old) else None; bp=unreal.InterchangeBlueprintPipelineBaseLibrary.create_interchange_pipeline_blueprint('/Game/Pipelines','BPI_FBXMaterial',unreal.InterchangeBlueprintPipelineBase); print('SUCCESS:', bp.get_path_name() if bp else 'FAILED'); unreal.EditorAssetLibrary.save_loaded_asset(bp) if bp else None
+
+注意：
+- 去掉了外层的双引号
+- 直接输入 py 命令
+
+========================================
+或者分步执行（更安全）：
+========================================
+
+步骤 1 - 导入模块：
+py import unreal
+
+步骤 2 - 删除旧 BP（如果存在）：
+py old='/Game/Pipelines/BPI_FBXMaterial'; unreal.EditorAssetLibrary.delete_asset(old) if unreal.EditorAssetLibrary.does_asset_exist(old) else print('Not found')
+
+步骤 3 - 创建新 BP：
+py bp=unreal.InterchangeBlueprintPipelineBaseLibrary.create_interchange_pipeline_blueprint('/Game/Pipelines','BPI_FBXMaterial',unreal.InterchangeBlueprintPipelineBase); print('SUCCESS:', bp.get_path_name() if bp else 'FAILED')
+
+步骤 4 - 保存：
+py unreal.EditorAssetLibrary.save_loaded_asset(bp)
+
+========================================

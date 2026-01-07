@@ -13,7 +13,8 @@ class UUnrealMCPBridge;
 class FMCPServerRunnable : public FRunnable
 {
 public:
-	FMCPServerRunnable(UUnrealMCPBridge* InBridge, TSharedPtr<FSocket> InListenerSocket);
+	FMCPServerRunnable(UUnrealMCPBridge* InBridge, FSocket* InListenerSocket);
+
 	virtual ~FMCPServerRunnable();
 
 	// FRunnable interface
@@ -23,12 +24,14 @@ public:
 	virtual void Exit() override;
 
 protected:
-	void HandleClientConnection(TSharedPtr<FSocket> ClientSocket);
-	void ProcessMessage(TSharedPtr<FSocket> Client, const FString& Message);
+	void HandleClientConnection(FSocket* ClientSocket);
+	void ProcessMessage(FSocket* Client, const FString& Message);
+
 
 private:
 	UUnrealMCPBridge* Bridge;
-	TSharedPtr<FSocket> ListenerSocket;
-	TSharedPtr<FSocket> ClientSocket;
+	FSocket* ListenerSocket;
+	FSocket* ClientSocket;
 	bool bRunning;
+
 }; 

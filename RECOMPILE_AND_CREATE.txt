@@ -1,0 +1,28 @@
+========================================
+Step-by-Step Instructions
+========================================
+
+1. [LIVE CODING] 在 UE Editor 中按 Ctrl + Alt + F11
+   - 等待编译完成
+   - 看到 "Live Coding Succeeded" 提示
+
+2. [DELETE OLD] 在 Content Browser 中删除旧 Blueprint
+   - 右键 /Game/Pipelines/BPI_FBXMaterial
+   - Delete
+   - 确认删除
+
+3. [RUN SCRIPT] 运行创建脚本
+   命令：python e:\Work\UGit\UEMCP\unreal-mcp\CREATE_SCRIPTED_CORRECT.py
+
+========================================
+What was changed?
+========================================
+
+Added support for:
+- BlueprintPipelineBase → UInterchangeBlueprintPipelineBase
+- EditorBlueprintPipelineBase → UInterchangeEditorBlueprintPipelineBase
+
+These are the ONLY two valid parent classes for 
+Interchange Scripted Pipeline Blueprints!
+
+========================================

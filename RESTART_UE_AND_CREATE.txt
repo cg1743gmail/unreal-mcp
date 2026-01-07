@@ -1,0 +1,16 @@
+========================================
+步骤：重启 UE Editor 并通过 MCP 创建
+========================================
+
+1. 关闭 UE Editor
+
+2. 重新打开 UE Editor
+   MCPGameProject.uproject
+
+3. 运行以下命令创建 Blueprint：
+
+python -c "import json,socket;s=socket.socket();s.settimeout(30);s.connect(('127.0.0.1',55557));s.sendall(json.dumps({'type':'create_blueprint','params':{'name':'BPI_FBXMaterial','package_path':'/Game/Pipelines','parent_class':'InterchangeGenericMaterialPipeline'}}).encode());d=b'';exec('while 1:\n c=s.recv(8192)\n if not c:break\n d+=c\n try:r=json.loads(d);break\n except:pass');s.close();print(json.dumps(json.loads(d),indent=2))"
+
+========================================
+或者在 UE Editor 打开后，我会自动执行
+========================================

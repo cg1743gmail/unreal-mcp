@@ -48,8 +48,9 @@ public:
 private:
 	// Server state
 	bool bIsRunning;
-	TSharedPtr<FSocket> ListenerSocket;
-	TSharedPtr<FSocket> ConnectionSocket;
+	FSocket* ListenerSocket;
+	FSocket* ConnectionSocket;
+
 
 	// Thread + runnable lifecycle (avoid leaks; support graceful stop)
 	FRunnableThread* ServerThread;
